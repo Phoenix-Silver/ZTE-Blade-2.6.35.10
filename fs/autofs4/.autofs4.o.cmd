@@ -1,0 +1,1 @@
+cmd_fs/autofs4/autofs4.o := /home/phoenix/android-ndk-r5b/toolchains/arm-eabi-4.4.0/prebuilt/linux-x86/bin/arm-eabi-ld -EL    -r -o fs/autofs4/autofs4.o fs/autofs4/init.o fs/autofs4/inode.o fs/autofs4/root.o fs/autofs4/symlink.o fs/autofs4/waitq.o fs/autofs4/expire.o fs/autofs4/dev-ioctl.o 
