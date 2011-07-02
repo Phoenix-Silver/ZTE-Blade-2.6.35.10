@@ -14,9 +14,11 @@
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/usb/android_composite.h>
+#include <mach/usb_gadget_fserial.h>
 
 #include "u_serial.h"
 #include "gadget_chips.h"
+
 
 /*
  * This function packages a simple "generic serial" port with no real
@@ -69,6 +71,17 @@ struct f_gser {
 #endif
 };
 
+enum transport_type transport;
+#define NR_PORTS	2
+struct sdio_port_info port_info[NR_PORTS];
+
+static inline bool is_transport_sdio(enum transport_type t)
+{
+	if (t == USB_GADGET_FSERIAL_TRANSPORT_SDIO)
+		return 1;
+	return 0;
+}
+
 static inline struct f_gser *func_to_gser(struct usb_function *f)
 {
 	return container_of(f, struct f_gser, port.func);
@@ -80,16 +93,7 @@ static inline struct f_gser *port_to_gser(struct gserial *p)
 	return container_of(p, struct f_gser, port);
 }
 #define GS_LOG2_NOTIFY_INTERVAL		5	/* 1 << 5 == 32 msec */
-
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-/* LGE_CHANGE
- * NMEA function fixup for LG Android USB
- * 2011-01-12, hyunhui.park@lge.com
- */
-#define GS_NOTIFY_MAXPACKET		16
-#else
 #define GS_NOTIFY_MAXPACKET		10	/* notification + 2 bytes */
-#endif
 #endif
 /*-------------------------------------------------------------------------*/
 
@@ -104,19 +108,9 @@ static struct usb_interface_descriptor gser_interface_desc = {
 #else
 	.bNumEndpoints =	2,
 #endif
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-	/* LGE_CHANGE
-	 * NMEA function fixup for LG Android USB
-	 * 2011-01-12, hyunhui.park@lge.com
-	 */
-	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
-	.bInterfaceSubClass =	USB_CLASS_VENDOR_SPEC,
-	.bInterfaceProtocol =	USB_CLASS_VENDOR_SPEC,
-#else
 	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
 	.bInterfaceSubClass =	0,
 	.bInterfaceProtocol =	0,
-#endif
 	/* .iInterface = DYNAMIC */
 };
 #ifdef CONFIG_MODEM_SUPPORT
@@ -177,19 +171,6 @@ static struct usb_endpoint_descriptor gser_fs_out_desc = {
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
 };
 
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-/* LGE_CHANGE
- * NMEA function fixup for LG Android USB
- * 2011-01-12, hyunhui.park@lge.com
- */
-static struct usb_descriptor_header *gser_fs_function[] = {
-	(struct usb_descriptor_header *) &gser_interface_desc,
-	(struct usb_descriptor_header *) &gser_fs_in_desc,
-	(struct usb_descriptor_header *) &gser_fs_out_desc,
-	(struct usb_descriptor_header *) &gser_fs_notify_desc,
-	NULL,
-};
-#else /* below is original */
 static struct usb_descriptor_header *gser_fs_function[] = {
 	(struct usb_descriptor_header *) &gser_interface_desc,
 #ifdef CONFIG_MODEM_SUPPORT
@@ -203,7 +184,6 @@ static struct usb_descriptor_header *gser_fs_function[] = {
 	(struct usb_descriptor_header *) &gser_fs_out_desc,
 	NULL,
 };
-#endif
 
 /* high speed support: */
 #ifdef CONFIG_MODEM_SUPPORT
@@ -231,22 +211,8 @@ static struct usb_endpoint_descriptor gser_hs_out_desc = {
 	.wMaxPacketSize =	__constant_cpu_to_le16(512),
 };
 
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-/* LGE_CHANGE
- * NMEA function fixup for LG Android USB
- * 2011-01-12, hyunhui.park@lge.com
- */
 static struct usb_descriptor_header *gser_hs_function[] = {
 	(struct usb_descriptor_header *) &gser_interface_desc,
-	(struct usb_descriptor_header *) &gser_hs_in_desc,
-	(struct usb_descriptor_header *) &gser_hs_out_desc,
-	(struct usb_descriptor_header *) &gser_hs_notify_desc,
-	NULL,
-};
-#else /* below is original */
-static struct usb_descriptor_header *gser_hs_function[] = {
-	(struct usb_descriptor_header *) &gser_interface_desc,
-
 #ifdef CONFIG_MODEM_SUPPORT
 	(struct usb_descriptor_header *) &gser_header_desc,
 	(struct usb_descriptor_header *) &gser_call_mgmt_descriptor,
@@ -258,7 +224,6 @@ static struct usb_descriptor_header *gser_hs_function[] = {
 	(struct usb_descriptor_header *) &gser_hs_out_desc,
 	NULL,
 };
-#endif
 
 /* string descriptors: */
 
@@ -339,6 +304,9 @@ gser_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 
 		value = 0;
 		gser->port_handshake_bits = w_value;
+		if (gser->port.notify_modem)
+			gser->port.notify_modem(&gser->port,
+					gser->port_num, w_value);
 		break;
 
 	default:
@@ -392,7 +360,10 @@ static int gser_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 
 	if (gser->port.in->driver_data) {
 		DBG(cdev, "reset generic data ttyGS%d\n", gser->port_num);
-		gserial_disconnect(&gser->port);
+		if (is_transport_sdio(transport))
+			gsdio_disconnect(&gser->port, gser->port_num);
+		else
+			gserial_disconnect(&gser->port);
 	} else {
 		DBG(cdev, "activate generic data ttyGS%d\n", gser->port_num);
 	}
@@ -400,7 +371,10 @@ static int gser_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 			gser->hs.in, gser->fs.in);
 	gser->port.out_desc = ep_choose(cdev->gadget,
 			gser->hs.out, gser->fs.out);
-	gserial_connect(&gser->port, gser->port_num);
+	if (is_transport_sdio(transport))
+		gsdio_connect(&gser->port, gser->port_num);
+	else
+		gserial_connect(&gser->port, gser->port_num);
 	gser->online = 1;
 	return rc;
 }
@@ -411,7 +385,10 @@ static void gser_disable(struct usb_function *f)
 	struct usb_composite_dev *cdev = f->config->cdev;
 
 	DBG(cdev, "generic ttyGS%d deactivated\n", gser->port_num);
-	gserial_disconnect(&gser->port);
+	if (is_transport_sdio(transport))
+		gsdio_disconnect(&gser->port, gser->port_num);
+	else
+		gserial_disconnect(&gser->port);
 #ifdef CONFIG_MODEM_SUPPORT
 	usb_ep_fifo_flush(gser->notify);
 	usb_ep_disable(gser->notify);
@@ -426,41 +403,16 @@ static int gser_notify(struct f_gser *gser, u8 type, u16 value,
 	struct usb_ep			*ep = gser->notify;
 	struct usb_request		*req;
 	struct usb_cdc_notification	*notify;
-#ifndef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-	/* LGE_CHANGE
-	 * NMEA function fixup for LG Android USB
-	 * 2011-01-12, hyunhui.park@lge.com
-	 */
 	const unsigned			len = sizeof(*notify) + length;
-#endif
 	void				*buf;
 	int				status;
 	struct usb_composite_dev *cdev = gser->port.func.config->cdev;
-
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-	/* LGE_CHANGE
-	 * NMEA function fixup for LG Android USB
-	 * 2011-01-12, hyunhui.park@lge.com
-	 */
-	unsigned char noti_buf[GS_NOTIFY_MAXPACKET];
-
-	memset(noti_buf, 0, GS_NOTIFY_MAXPACKET);
-#endif
 
 	req = gser->notify_req;
 	gser->notify_req = NULL;
 	gser->pending = false;
 
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-	/* LGE_CHANGE
-	 * NMEA function fixup for LG Android USB
-	 * 2011-01-12, hyunhui.park@lge.com
-	 */
-	req->length = GS_NOTIFY_MAXPACKET;
-#else
 	req->length = len;
-#endif
-
 	notify = req->buf;
 	buf = notify + 1;
 
@@ -470,17 +422,7 @@ static int gser_notify(struct f_gser *gser, u8 type, u16 value,
 	notify->wValue = cpu_to_le16(value);
 	notify->wIndex = cpu_to_le16(gser->data_id);
 	notify->wLength = cpu_to_le16(length);
-
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_NMEA_FIX
-	/* LGE_CHANGE
-	 * NMEA function fixup for LG Android USB
-	 * 2011-01-12, hyunhui.park@lge.com
-	 */
-	memcpy(noti_buf, data, length);
-	memcpy(buf, noti_buf, GS_NOTIFY_MAXPACKET);
-#else
 	memcpy(buf, data, length);
-#endif
 
 	status = usb_ep_queue(ep, req, GFP_ATOMIC);
 	if (status < 0) {
@@ -607,6 +549,15 @@ static int gser_send_break(struct gserial *port, int duration)
 		state |= ACM_CTRL_BRK;
 
 	gser->serial_state = state;
+	return gser_notify_serial_state(gser);
+}
+
+static int gser_send_modem_ctrl_bits(struct gserial *port, int ctrl_bits)
+{
+	struct f_gser *gser = port_to_gser(port);
+
+	gser->serial_state = ctrl_bits;
+
 	return gser_notify_serial_state(gser);
 }
 #endif
@@ -799,6 +750,7 @@ int gser_bind_config(struct usb_configuration *c, u8 port_num)
 	gser->port.get_rts = gser_get_rts;
 	gser->port.send_carrier_detect = gser_send_carrier_detect;
 	gser->port.send_ring_indicator = gser_send_ring_indicator;
+	gser->port.send_modem_ctrl_bits = gser_send_modem_ctrl_bits;
 	gser->port.disconnect = gser_disconnect;
 	gser->port.send_break = gser_send_break;
 #endif
@@ -829,7 +781,11 @@ int fserial_modem_bind_config(struct usb_configuration *c)
 	 * serial ports. But for now allocate
 	 * two ports for modem and nmea.
 	 */
-	ret = gserial_setup(c->cdev->gadget, 2);
+	if (is_transport_sdio(transport))
+		ret = gsdio_setup(c->cdev->gadget, 2, port_info);
+	else
+		ret = gserial_setup(c->cdev->gadget, 2);
+
 	if (ret)
 		return ret;
 	return gser_bind_config(c, 0);
@@ -840,12 +796,55 @@ static struct android_usb_function modem_function = {
 	.bind_config = fserial_modem_bind_config,
 };
 
-static int __init init(void)
+static int fserial_remove(struct platform_device *dev)
 {
-	android_register_function(&modem_function);
-	android_register_function(&nmea_function);
+	gserial_cleanup();
+
 	return 0;
 }
-module_init(init);
+
+static struct platform_driver usb_fserial = {
+	.remove		= fserial_remove,
+	.driver = {
+		.name = "usb_fserial",
+		.owner = THIS_MODULE,
+	},
+};
+
+static int __init fserial_probe(struct platform_device *pdev)
+{
+	struct usb_gadget_fserial_platform_data	*pdata =
+					pdev->dev.platform_data;
+
+	dev_dbg(&pdev->dev, "%s: probe\n", __func__);
+
+	if (!pdata || !is_transport_sdio(pdata->transport))
+		goto probe_android_register;
+
+	transport = pdata->transport;
+	if (is_transport_sdio(transport) && pdata->no_ports > NR_PORTS) {
+		pr_err("%s: Transpor: SDIO ports avail:%d requested:%d\n",
+				__func__, NR_PORTS, pdata->no_ports);
+		return -EINVAL;
+	}
+
+	/* REVISIT: How can we get this data from config/pdata...*/
+	port_info[0].data_ch_name = "SDIO_DUN";
+	port_info[0].ctrl_ch_id = 9;
+	port_info[1].data_ch_name = "SDIO_NMEA";
+	port_info[1].ctrl_ch_id = 10;
+
+probe_android_register:
+	android_register_function(&modem_function);
+	android_register_function(&nmea_function);
+
+	return 0;
+}
+
+static int __init fserial_init(void)
+{
+	return platform_driver_probe(&usb_fserial, fserial_probe);
+}
+module_init(fserial_init);
 
 #endif /* CONFIG_USB_ANDROID_ACM */

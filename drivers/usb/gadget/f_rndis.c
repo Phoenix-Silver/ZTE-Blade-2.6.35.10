@@ -895,14 +895,15 @@ fail:
 #ifdef CONFIG_USB_ANDROID_RNDIS
 #include "rndis.c"
 
-static int __init rndis_probe(struct platform_device *pdev)
+static int rndis_probe(struct platform_device *pdev)
 {
 	rndis_pdata = pdev->dev.platform_data;
 	return 0;
 }
 
-static struct platform_driver rndis_platform_driver __refdata = {
+static struct platform_driver rndis_platform_driver = {
 	.driver = { .name = "rndis", },
+	.probe = rndis_probe,
 };
 
 int rndis_function_bind_config(struct usb_configuration *c)
@@ -932,7 +933,7 @@ static struct android_usb_function rndis_function = {
 
 static int __init init(void)
 {
-	platform_driver_probe(&rndis_platform_driver, rndis_probe);
+	platform_driver_register(&rndis_platform_driver);
 	android_register_function(&rndis_function);
 	return 0;
 }

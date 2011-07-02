@@ -1404,9 +1404,10 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	struct mdp_dirty_region dirty;
 	struct mdp_dirty_region *dirtyPtr = NULL;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
-
+#if 0
 	last_var = var;
 	last_info = info;
+#endif
 
 	if ((!mfd->op_enable) || (!mfd->panel_power_on))
 		return -EPERM;

@@ -3959,6 +3959,7 @@ do_wait_for_common(struct completion *x, long timeout, int state, int iowait)
 static long __sched
 wait_for_common(struct completion *x, long timeout, int state, int iowait)
 {
+#if 0
 /*LGE_CHANGE_S [bluerti@lge.com] 2010-04-01 <For Error Handler>*/
 	if (LG_ErrorHandler_enable) {
 		int i;
@@ -3967,6 +3968,7 @@ wait_for_common(struct completion *x, long timeout, int state, int iowait)
 		return 0;
 	}
 /*LGE_CHANGE_E [bluerti@lge.com] 2010-04-01 <For Error Handler>*/
+#endif
 	might_sleep();
 
 	spin_lock_irq(&x->wait.lock);

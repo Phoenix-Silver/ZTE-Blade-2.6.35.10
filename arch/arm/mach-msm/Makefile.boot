@@ -22,8 +22,8 @@ ifeq ($(CONFIG_LGE_4G_DDR),y)
 	params_phys-$(CONFIG_MACH_MSM7X27_THUNDERA)	:= 0x12800100
 	initrd_phys-$(CONFIG_MACH_MSM7X27_THUNDERA)	:= 0x13800000
 else
-	   zreladdr-$(CONFIG_ARCH_MSM7X27)	:= 0x00208000
-	params_phys-$(CONFIG_ARCH_MSM7X27)	:= 0x00200100
+	   zreladdr-$(CONFIG_ARCH_MSM7X27)	:= 0x02608000
+	params_phys-$(CONFIG_ARCH_MSM7X27)	:= 0x02600100
 	initrd_phys-$(CONFIG_ARCH_MSM7X27)	:= 0x0A000000
 endif
 

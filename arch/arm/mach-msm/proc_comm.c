@@ -145,12 +145,13 @@ crash:
 	//	extern int get_status_hidden_reset();
 		int ret;
 		spin_unlock_irqrestore(&proc_comm_lock, flags);
-	
+#if 0	
 		if (LG_ErrorHandler_enable) // check using proc_comm after arm9 crash 
 			return 0;
 		
 	//	if(get_status_hidden_reset()==0 ) {
 			ret = LGE_ErrorHandler_Main(MODEM_CRASH, error_modem_message);
+#endif			
 			smsm_reset_modem(ret);
 	//	} else {
 	//		smsm_reset_modem(SMSM_SYSTEM_REBOOT);
