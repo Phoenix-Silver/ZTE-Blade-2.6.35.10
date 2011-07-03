@@ -5,7 +5,6 @@
  * Copyright (C) 2008 by David Brownell
  * Copyright (C) 2008 by Nokia Corporation
  * Copyright (C) 2009 by Samsung Electronics
- * Copyright (c) 2011 Code Aurora Forum. All rights reserved.
  * Author: Michal Nazarewicz (m.nazarewicz@samsung.com)
  *
  * This software is distributed under the terms of the GNU General
@@ -22,7 +21,6 @@
 
 #include "u_serial.h"
 #include "gadget_chips.h"
-
 
 /*
  * This CDC ACM function support just wraps control functions and
@@ -51,9 +49,9 @@ struct f_acm {
 	struct gserial			port;
 	u8				ctrl_id, data_id;
 	u8				port_num;
-	enum transport_type		transport;
 
 	u8				pending;
+	u8				online;
 
 	/* lock is mostly for pending and notify_req ... they get accessed
 	 * by callbacks both from tty (open/close/break) under its spinlock,
@@ -86,17 +84,6 @@ struct f_acm {
 #define ACM_CTRL_DCD		(1 << 0)
 };
 
-static unsigned int no_tty_ports;
-static unsigned int no_sdio_ports;
-static unsigned int no_smd_ports;
-static unsigned int nr_ports;
-
-static struct port_info {
-	enum transport_type	transport;
-	unsigned		port_num;
-	unsigned		client_port_num;
-} gacm_ports[GSERIAL_NO_PORTS];
-
 static inline struct f_acm *func_to_acm(struct usb_function *f)
 {
 	return container_of(f, struct f_acm, port.func);
@@ -107,117 +94,37 @@ static inline struct f_acm *port_to_acm(struct gserial *p)
 	return container_of(p, struct f_acm, port);
 }
 
-static char *transport_to_str(enum transport_type t)
-{
-	switch (t) {
-	case USB_GADGET_FSERIAL_TRANSPORT_TTY:
-		return "TTY";
-	case USB_GADGET_FSERIAL_TRANSPORT_SDIO:
-		return "SDIO";
-	case USB_GADGET_FSERIAL_TRANSPORT_SMD:
-		return "SMD";
-	}
-
-	return "NONE";
-}
-
-static int gport_setup(struct usb_configuration *c)
-{
-	int ret = 0;
-
-	pr_debug("%s: no_tty_ports:%u no_sdio_ports: %u nr_ports:%u\n",
-			__func__, no_tty_ports, no_sdio_ports, nr_ports);
-
-	if (no_tty_ports)
-		ret = gserial_setup(c->cdev->gadget, no_tty_ports);
-	if (no_sdio_ports)
-		ret = gsdio_setup(c->cdev->gadget, no_sdio_ports);
-	if (no_smd_ports)
-		ret = gsmd_setup(c->cdev->gadget, no_smd_ports);
-
-	return ret;
-}
-
-static int gport_connect(struct f_acm *acm)
-{
-	unsigned port_num;
-
-	port_num = gacm_ports[acm->port_num].client_port_num;
-
-
-	pr_debug("%s: transport:%s f_acm:%p gserial:%p port_num:%d cl_port_no:%d\n",
-			__func__, transport_to_str(acm->transport),
-			acm, &acm->port, acm->port_num, port_num);
-
-	switch (acm->transport) {
-	case USB_GADGET_FSERIAL_TRANSPORT_TTY:
-		gserial_connect(&acm->port, port_num);
-		break;
-	case USB_GADGET_FSERIAL_TRANSPORT_SDIO:
-		gsdio_connect(&acm->port, port_num);
-		break;
-	case USB_GADGET_FSERIAL_TRANSPORT_SMD:
-		gsmd_connect(&acm->port, port_num);
-		break;
-	default:
-		pr_err("%s: Un-supported transport: %s\n", __func__,
-				transport_to_str(acm->transport));
-		return -ENODEV;
-	}
-
-	return 0;
-}
-
-static int gport_disconnect(struct f_acm *acm)
-{
-	unsigned port_num;
-
-	port_num = gacm_ports[acm->port_num].client_port_num;
-
-	pr_debug("%s: transport:%s f_acm:%p gserial:%p port_num:%d cl_pno:%d\n",
-			__func__, transport_to_str(acm->transport),
-			acm, &acm->port, acm->port_num, port_num);
-
-	switch (acm->transport) {
-	case USB_GADGET_FSERIAL_TRANSPORT_TTY:
-		gserial_disconnect(&acm->port);
-		break;
-	case USB_GADGET_FSERIAL_TRANSPORT_SDIO:
-		gsdio_disconnect(&acm->port, port_num);
-		break;
-	case USB_GADGET_FSERIAL_TRANSPORT_SMD:
-		gsmd_disconnect(&acm->port, port_num);
-		break;
-	default:
-		pr_err("%s: Un-supported transport:%s\n", __func__,
-				transport_to_str(acm->transport));
-		return -ENODEV;
-	}
-
-	return 0;
-}
 /*-------------------------------------------------------------------------*/
 
 /* notification endpoint uses smallish and infrequent fixed-size messages */
 
 #define GS_LOG2_NOTIFY_INTERVAL		5	/* 1 << 5 == 32 msec */
+
+
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+/* LGE_CHANGE
+ * Apply CDC ACM function fixup for LG Android USB
+ * 2011-01-12, hyunhui.park@lge.com
+ */
+#define GS_NOTIFY_MAXPACKET		16	/* For LG host driver */
+#else
 #define GS_NOTIFY_MAXPACKET		10	/* notification + 2 bytes */
+#endif
 
 /* interface and class descriptors: */
 
-static struct usb_interface_assoc_descriptor
-acm_iad_descriptor = {
+static struct usb_interface_assoc_descriptor acm_iad_descriptor = {
 	.bLength =		sizeof acm_iad_descriptor,
 	.bDescriptorType =	USB_DT_INTERFACE_ASSOCIATION,
 
 	/* .bFirstInterface =	DYNAMIC, */
-	.bInterfaceCount = 	2,	// control + data
+	/* control + data */
+	.bInterfaceCount = 	2,
 	.bFunctionClass =	USB_CLASS_COMM,
 	.bFunctionSubClass =	USB_CDC_SUBCLASS_ACM,
 	.bFunctionProtocol =	USB_CDC_ACM_PROTO_AT_V25TER,
 	/* .iFunction =		DYNAMIC */
 };
-
 
 static struct usb_interface_descriptor acm_control_interface_desc = {
 	.bLength =		USB_DT_INTERFACE_SIZE,
@@ -360,7 +267,7 @@ static struct usb_descriptor_header *acm_hs_function[] = {
 static struct usb_string acm_string_defs[] = {
 	[ACM_CTRL_IDX].s = "CDC Abstract Control Model (ACM)",
 	[ACM_DATA_IDX].s = "CDC ACM Data",
-	[ACM_IAD_IDX ].s = "CDC Serial",
+	[ACM_IAD_IDX].s = "CDC Serial",
 	{  /* ZEROES END LIST */ },
 };
 
@@ -436,7 +343,8 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	/* SET_LINE_CODING ... just read and save what the host sends */
 	case ((USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
 			| USB_CDC_REQ_SET_LINE_CODING:
-		if (w_length != sizeof(struct usb_cdc_line_coding))
+		if (w_length != sizeof(struct usb_cdc_line_coding)
+				|| w_index != acm->ctrl_id)
 			goto invalid;
 
 		value = w_length;
@@ -447,6 +355,8 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	/* GET_LINE_CODING ... return what host sent, or initial value */
 	case ((USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
 			| USB_CDC_REQ_GET_LINE_CODING:
+		if (w_index != acm->ctrl_id)
+			goto invalid;
 
 		value = min_t(unsigned, w_length,
 				sizeof(struct usb_cdc_line_coding));
@@ -456,6 +366,9 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 	/* SET_CONTROL_LINE_STATE ... save what the host sent */
 	case ((USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) << 8)
 			| USB_CDC_REQ_SET_CONTROL_LINE_STATE:
+		if (w_index != acm->ctrl_id)
+			goto invalid;
+
 		value = 0;
 
 		/* FIXME we should not allow data to flow until the
@@ -463,12 +376,6 @@ static int acm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 		 * that bit, we should return to that no-flow state.
 		 */
 		acm->port_handshake_bits = w_value;
-		if (acm->port.notify_modem) {
-			unsigned port_num =
-				gacm_ports[acm->port_num].client_port_num;
-
-			acm->port.notify_modem(&acm->port, port_num, w_value);
-		}
 		break;
 
 	default:
@@ -518,7 +425,7 @@ static int acm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 	} else if (intf == acm->data_id) {
 		if (acm->port.in->driver_data) {
 			DBG(cdev, "reset acm ttyGS%d\n", acm->port_num);
-			gport_disconnect(acm);
+			gserial_disconnect(&acm->port);
 		} else {
 			DBG(cdev, "activate acm ttyGS%d\n", acm->port_num);
 		}
@@ -526,10 +433,11 @@ static int acm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 				acm->hs.in, acm->fs.in);
 		acm->port.out_desc = ep_choose(cdev->gadget,
 				acm->hs.out, acm->fs.out);
-		gport_connect(acm);
+		gserial_connect(&acm->port, acm->port_num);
 
 	} else
 		return -EINVAL;
+	acm->online = 1;
 
 	return 0;
 }
@@ -540,8 +448,10 @@ static void acm_disable(struct usb_function *f)
 	struct usb_composite_dev *cdev = f->config->cdev;
 
 	DBG(cdev, "acm ttyGS%d deactivated\n", acm->port_num);
-	gport_disconnect(acm);
+	gserial_disconnect(&acm->port);
+	usb_ep_fifo_flush(acm->notify);
 	usb_ep_disable(acm->notify);
+	acm->online = 0;
 	acm->notify->driver_data = NULL;
 }
 
@@ -567,15 +477,39 @@ static int acm_cdc_notify(struct f_acm *acm, u8 type, u16 value,
 	struct usb_ep			*ep = acm->notify;
 	struct usb_request		*req;
 	struct usb_cdc_notification	*notify;
+#ifndef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * Apply CDC ACM function fixup for LG Android USB
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
 	const unsigned			len = sizeof(*notify) + length;
+#endif
 	void				*buf;
 	int				status;
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * Apply CDC ACM function fixup for LG Android USB
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	unsigned char noti_buf[GS_NOTIFY_MAXPACKET];
+
+	memset(noti_buf, 0, GS_NOTIFY_MAXPACKET);
+#endif
 
 	req = acm->notify_req;
 	acm->notify_req = NULL;
 	acm->pending = false;
 
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * Apply CDC ACM function fixup for LG Android USB
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	req->length = GS_NOTIFY_MAXPACKET;
+#else
 	req->length = len;
+#endif
+
 	notify = req->buf;
 	buf = notify + 1;
 
@@ -585,7 +519,16 @@ static int acm_cdc_notify(struct f_acm *acm, u8 type, u16 value,
 	notify->wValue = cpu_to_le16(value);
 	notify->wIndex = cpu_to_le16(acm->ctrl_id);
 	notify->wLength = cpu_to_le16(length);
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * Apply CDC ACM function fixup for LG Android USB
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	memcpy(noti_buf, data, length);
+	memcpy(buf, noti_buf, GS_NOTIFY_MAXPACKET);
+#else
 	memcpy(buf, data, length);
+#endif
 
 	/* ep_queue() can complete immediately if it fills the fifo... */
 	spin_unlock(&acm->lock);
@@ -635,7 +578,7 @@ static void acm_cdc_notify_complete(struct usb_ep *ep, struct usb_request *req)
 	acm->notify_req = req;
 	spin_unlock(&acm->lock);
 
-	if (doit)
+	if (doit && acm->online)
 		acm_notify_serial_state(acm);
 }
 
@@ -647,6 +590,57 @@ static void acm_connect(struct gserial *port)
 
 	acm->serial_state |= ACM_CTRL_DSR | ACM_CTRL_DCD;
 	acm_notify_serial_state(acm);
+}
+
+unsigned int acm_get_dtr(struct gserial *port)
+{
+	struct f_acm		*acm = port_to_acm(port);
+
+	if (acm->port_handshake_bits & ACM_CTRL_DTR)
+		return 1;
+	else
+		return 0;
+}
+
+unsigned int acm_get_rts(struct gserial *port)
+{
+	struct f_acm		*acm = port_to_acm(port);
+
+	if (acm->port_handshake_bits & ACM_CTRL_RTS)
+		return 1;
+	else
+		return 0;
+}
+
+unsigned int acm_send_carrier_detect(struct gserial *port, unsigned int yes)
+{
+	struct f_acm		*acm = port_to_acm(port);
+	u16			state;
+
+	pr_info("%s : ACM_CTRL_DCD is %s\n", __func__, (yes ? "yes" : "no"));
+	state = acm->serial_state;
+	state &= ~ACM_CTRL_DCD;
+	if (yes)
+		state |= ACM_CTRL_DCD;
+
+	acm->serial_state = state;
+	return acm_notify_serial_state(acm);
+
+}
+
+unsigned int acm_send_ring_indicator(struct gserial *port, unsigned int yes)
+{
+	struct f_acm		*acm = port_to_acm(port);
+	u16			state;
+
+	state = acm->serial_state;
+	state &= ~ACM_CTRL_RI;
+	if (yes)
+		state |= ACM_CTRL_RI;
+
+	acm->serial_state = state;
+	return acm_notify_serial_state(acm);
+
 }
 
 static void acm_disconnect(struct gserial *port)
@@ -671,15 +665,6 @@ static int acm_send_break(struct gserial *port, int duration)
 	return acm_notify_serial_state(acm);
 }
 
-static int acm_send_modem_ctrl_bits(struct gserial *port, int ctrl_bits)
-{
-	struct f_acm *acm = port_to_acm(port);
-
-	acm->serial_state = ctrl_bits;
-
-	return acm_notify_serial_state(acm);
-}
-
 /*-------------------------------------------------------------------------*/
 
 /* ACM function driver setup/binding */
@@ -696,8 +681,8 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 	if (status < 0)
 		goto fail;
 	acm->ctrl_id = status;
-	acm_iad_descriptor.bFirstInterface = status;
 
+	acm_iad_descriptor.bFirstInterface = status;
 	acm_control_interface_desc.bInterfaceNumber = status;
 	acm_union_desc .bMasterInterface0 = status;
 
@@ -808,7 +793,16 @@ acm_unbind(struct usb_configuration *c, struct usb_function *f)
 	if (gadget_is_dualspeed(c->cdev->gadget))
 		usb_free_descriptors(f->hs_descriptors);
 	usb_free_descriptors(f->descriptors);
-	gs_free_req(acm->notify, acm->notify_req);
+
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * This prevents kernel panic from QCT's acm patch
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	if (acm->notify_req)
+		gs_free_req(acm->notify, acm->notify_req);
+#endif
+
 	kfree(acm);
 }
 
@@ -818,6 +812,15 @@ static inline bool can_support_cdc(struct usb_configuration *c)
 	/* everything else is *probably* fine ... */
 	return true;
 }
+
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET_FIX
+/* LGE_CHANGE
+ * To bind LG AndroidNet, another ACM instance
+ * named "acm2" is used.
+ * 2011-01-12, hyunhui.park@lge.com
+ */
+static int acm_count;
+#endif
 
 /**
  * acm_bind_config - add a CDC ACM function to a configuration
@@ -838,6 +841,14 @@ int acm_bind_config(struct usb_configuration *c, u8 port_num)
 
 	if (!can_support_cdc(c))
 		return -EINVAL;
+
+
+#ifndef CONFIG_USB_SUPPORT_LGE_ANDROID_ACM_FIX
+	/* LGE_CHANGE
+	 * By not set string IDs, iMACAddress of ECM descriptor
+	 * for LG AndroidNet will be set properly.
+	 * 2011-03-22, hyunhui.park@lge.com
+	 */
 
 	/* REVISIT might want instance-specific strings to help
 	 * distinguish instances ...
@@ -866,6 +877,7 @@ int acm_bind_config(struct usb_configuration *c, u8 port_num)
 
 		acm_iad_descriptor.iFunction = status;
 	}
+#endif
 
 	/* allocate and initialize one new instance */
 	acm = kzalloc(sizeof *acm, GFP_KERNEL);
@@ -875,18 +887,33 @@ int acm_bind_config(struct usb_configuration *c, u8 port_num)
 	spin_lock_init(&acm->lock);
 
 	acm->port_num = port_num;
-	acm->transport = gacm_ports[port_num].transport;
 
 	acm->port.connect = acm_connect;
+
+	acm->port.get_dtr = acm_get_dtr;
+	acm->port.get_rts = acm_get_rts;
+	acm->port.send_carrier_detect = acm_send_carrier_detect;
+	acm->port.send_ring_indicator = acm_send_ring_indicator;
+
 	acm->port.disconnect = acm_disconnect;
 	acm->port.send_break = acm_send_break;
-	acm->port.send_modem_ctrl_bits = acm_send_modem_ctrl_bits;
 
-	if (port_num == 0)
-		acm->port.func.name = "acm1";
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET_FIX
+	/* LGE_CHANGE
+	 * To bind LG AndroidNet, another ACM instance
+	 * named "acm2" is used.
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	if (!acm_count)
+		acm->port.func.name = "acm";
 	else
 		acm->port.func.name = "acm2";
 
+	acm_count++;
+
+#else /* below is original */
+	acm->port.func.name = "acm";
+#endif
 	acm->port.func.strings = acm_strings;
 	/* descriptors are per-instance copies */
 	acm->port.func.bind = acm_bind;
@@ -902,100 +929,94 @@ int acm_bind_config(struct usb_configuration *c, u8 port_num)
 }
 
 #ifdef CONFIG_USB_ANDROID_ACM
+/* LGE_CHANGE
+ * Add ACM platform data
+ * 2011-01-12, hyunhui.park@lge.com
+ */
+#include <linux/platform_device.h>
 
-int acm1_function_bind_config(struct usb_configuration *c)
+static struct acm_platform_data *acm_pdata;
+
+static int __init acm_probe(struct platform_device *pdev)
 {
+	if (pdev)
+		acm_pdata = pdev->dev.platform_data;
+
+	return 0;
+}
+
+static struct platform_driver acm_platform_driver __refdata = {
+	.driver = { .name = "acm", },
+};
+
+int acm_function_bind_config(struct usb_configuration *c)
+{
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET_FIX
+	/* LGE_CHANGE
+	 * Add ACM platform data
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	int i;
+	u8 num_inst = acm_pdata ? acm_pdata->num_inst : 1;
+	int ret;
+
+	/* Another port will be used by nmea */
+	ret = gserial_setup(c->cdev->gadget, num_inst+1);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < num_inst; i++) {
+		ret = acm_bind_config(c, i);
+		if (ret) {
+			pr_err("Could not bind acm%u config\n", i);
+			break;
+		}
+	}
+
+	return ret;
+#else /* below is original */
 	int ret = acm_bind_config(c, 0);
 	if (ret == 0)
-		gport_setup(c);
+		gserial_setup(c->cdev->gadget, 1);
 	return ret;
+#endif
 }
 
+static struct android_usb_function acm_function = {
+	.name = "acm",
+	.bind_config = acm_function_bind_config,
+};
+
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET_FIX
+/* LGE_CHANGE
+ * Add ACM function instance named "acm2".
+ * 2011-01-12, hyunhui.park@lge.com
+ */
 int acm2_function_bind_config(struct usb_configuration *c)
 {
-	int ret = acm_bind_config(c, 1);
-
+	int ret = acm_bind_config(c, 0);
 	return ret;
 }
-
-static struct android_usb_function acm1_function = {
-	.name = "acm1",
-	.bind_config = acm1_function_bind_config,
-};
 
 static struct android_usb_function acm2_function = {
 	.name = "acm2",
 	.bind_config = acm2_function_bind_config,
 };
-
-static int facm_remove(struct platform_device *pdev)
-{
-	gserial_cleanup();
-
-	return 0;
-}
-
-static struct platform_driver usb_facm = {
-	.remove		= facm_remove,
-	.driver = {
-		.name = "usb_facm",
-		.owner = THIS_MODULE,
-	},
-};
-
-static int __init facm_probe(struct platform_device *pdev)
-{
-	struct usb_gadget_facm_pdata *pdata = pdev->dev.platform_data;
-	int i;
-
-	dev_dbg(&pdev->dev, "%s: probe\n", __func__);
-
-	if (!pdata)
-		goto probe_android_register;
-
-	for (i = 0; i < GSERIAL_NO_PORTS; i++) {
-		gacm_ports[i].transport = pdata->transport[i];
-		gacm_ports[i].port_num = i;
-
-		switch (gacm_ports[i].transport) {
-		case USB_GADGET_FSERIAL_TRANSPORT_TTY:
-			gacm_ports[i].client_port_num = no_tty_ports;
-			no_tty_ports++;
-			break;
-		case USB_GADGET_FSERIAL_TRANSPORT_SDIO:
-			gacm_ports[i].client_port_num = no_sdio_ports;
-			no_sdio_ports++;
-			break;
-		case USB_GADGET_FSERIAL_TRANSPORT_SMD:
-			gacm_ports[i].client_port_num = no_smd_ports;
-			no_smd_ports++;
-			break;
-		default:
-			pr_err("%s: Un-supported transport transport: %u\n",
-					__func__, gacm_ports[i].transport);
-			return -ENODEV;
-		}
-
-		nr_ports++;
-	}
-
-	pr_info("%s:gport:tty_ports:%u sdio_ports:%u "
-			"smd_ports:%u nr_ports:%u\n",
-			__func__, no_tty_ports, no_sdio_ports,
-			no_smd_ports, nr_ports);
-
-probe_android_register:
-	android_register_function(&acm1_function);
-	android_register_function(&acm2_function);
-
-	return 0;
-}
+#endif
 
 static int __init init(void)
 {
 	printk(KERN_INFO "f_acm init\n");
-
-	return platform_driver_probe(&usb_facm, facm_probe);
+	platform_driver_probe(&acm_platform_driver, acm_probe);
+	android_register_function(&acm_function);
+#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET_FIX
+	/* LGE_CHANGE
+	 * Add ACM function instance named "acm2".
+	 * 2011-01-12, hyunhui.park@lge.com
+	 */
+	android_register_function(&acm2_function);
+#endif
+	return 0;
 }
 module_init(init);
 

@@ -554,10 +554,12 @@ void mdp_dma_pan_update(struct fb_info *info)
 		/* waiting for this update to complete */
 		mfd->pan_waiting = TRUE;
 		wait_for_completion_killable(&mfd->pan_comp);
+#if 0		
 		/*LGE_CHANGE_S [bluerti@lge.com] 2009-08-24 */
 		if (LG_ErrorHandler_enable) {
 			mfd->dma_fnc(mfd);
 		}
+#endif		
 		/*LGE_CHANGE_E [bluerti@lge.com] */
 	} else
 		mfd->dma_fnc(mfd);

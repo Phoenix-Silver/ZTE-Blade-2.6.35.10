@@ -1205,15 +1205,20 @@ static int mdp_probe(struct platform_device *pdev)
 
 #ifdef CONFIG_FB_MSM_MIPI_DSI
 	case MIPI_VIDEO_PANEL:
+#if 0
 		pdata->on = mdp4_dsi_video_on;
 		pdata->off = mdp4_dsi_video_off;
+#endif
+
 		mfd->hw_refresh = TRUE;
+#if 0		
 		mfd->dma_fnc = mdp4_dsi_video_overlay;
+#endif		
 		if (mfd->panel_info.pdest == DISPLAY_1) {
-			if_no = PRIMARY_INTF_SEL;
+			//if_no = PRIMARY_INTF_SEL;
 			mfd->dma = &dma2_data;
 		} else {
-			if_no = EXTERNAL_INTF_SEL;
+			//if_no = EXTERNAL_INTF_SEL;
 			mfd->dma = &dma_e_data;
 		}
 		mdp4_display_intf_sel(if_no, DSI_VIDEO_INTF);

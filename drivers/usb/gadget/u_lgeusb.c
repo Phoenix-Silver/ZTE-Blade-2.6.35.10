@@ -175,7 +175,8 @@ static void do_switch_mode(int pid, int need_reset)
  */
 int lgeusb_detect_factory_cable(void)
 {
-	return get_factory_cable();
+	//return get_factory_cable();
+	return 1;
 }
 
 /* LGE_CHANGE
@@ -226,13 +227,13 @@ int lgeusb_get_current_mode(void)
 int lgeusb_set_current_mode(int need_reset)
 {
 	struct lgeusb_info *info = usb_info;
-	int ret;
+	int ret = 0;
 
 	if (!info->serialno || !info->defaultno) {
 		lgeusb_info("serial numbers are invalid, skip configuration.\n");
 		return -EINVAL;
 	}
-
+#if 0
 	if (get_factory_cable()) {
 		/* We already are in factory mode, skip it. */
 		if (info->current_mode == LGEUSB_FACTORY_MODE)
@@ -246,7 +247,7 @@ int lgeusb_set_current_mode(int need_reset)
 		info->serialno[0] = '\0';
 		return LGE_FACTORY_PID;
 	}
-
+#endif
 	/* We already are in android mode, skip it. */
 	if (info->current_mode == LGEUSB_ANDROID_MODE)
 		return info->current_pid;
@@ -254,7 +255,7 @@ int lgeusb_set_current_mode(int need_reset)
 	lgeusb_info("We detect Normal USB cable......\n");
 	lgeusb_switch_android_mode(need_reset);
 
-	ret = get_serial_number(info->serialno);
+	//ret = get_serial_number(info->serialno);
 
 	msm_hsusb_send_productID(info->current_pid);
 	msm_hsusb_is_serial_num_null(0);
