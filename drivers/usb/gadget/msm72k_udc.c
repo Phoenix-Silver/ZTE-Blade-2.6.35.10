@@ -143,7 +143,7 @@ static void usb_do_remote_wakeup(struct work_struct *w);
 
 #define USB_CHG_DET_DELAY	msecs_to_jiffies(1000)
 #define REMOTE_WAKEUP_DELAY	msecs_to_jiffies(1000)
-#define PHY_STATUS_CHECK_DELAY	msecs_to_jiffies(1000)
+#define PHY_STATUS_CHECK_DELAY	(jiffies + msecs_to_jiffies(1000))
 
 struct usb_info {
 	/* lock for register/queue/device state changes */
@@ -327,20 +327,18 @@ static int usb_phy_stuck_check(struct usb_info *ui)
 	 * otherwise, PHY seems to have stuck.
 	 */
 
-	if (ui->xceiv->io_ops->write) {
-		if (ui->xceiv->io_ops->write(ui->xceiv, 0xAA, 0x16) == -1) {
-			dev_dbg(&ui->pdev->dev,
+	if (otg_io_write(ui->xceiv, 0xAA, 0x16) == -1) {
+		dev_dbg(&ui->pdev->dev,
 				"%s(): ulpi write timeout\n", __func__);
-			return -EIO;
-		}
+		return -EIO;
 	}
-	if (ui->xceiv->io_ops->read) {
-		if (ui->xceiv->io_ops->read(ui->xceiv, 0x16) != 0xAA) {
-			dev_dbg(&ui->pdev->dev,
+
+	if (otg_io_read(ui->xceiv, 0x16) != 0xAA) {
+		dev_dbg(&ui->pdev->dev,
 				"%s(): read value is incorrect\n", __func__);
-			return -EIO;
-		}
+		return -EIO;
 	}
+
 	return 0;
 }
 
@@ -365,6 +363,9 @@ static void usb_phy_stuck_recover(struct work_struct *w)
 
 	disable_irq(otg->irq);
 	if (usb_phy_stuck_check(ui)) {
+#ifdef CONFIG_USB_MSM_ACA
+		del_timer_sync(&otg->id_timer);
+#endif
 		ui->phy_fail_count++;
 		dev_err(&ui->pdev->dev,
 				"%s():PHY stuck, resetting HW\n", __func__);
@@ -373,6 +374,10 @@ static void usb_phy_stuck_recover(struct work_struct *w)
 		 * reset the PHY and HW link to recover the PHY
 		 */
 		usb_reset(ui);
+#ifdef CONFIG_USB_MSM_ACA
+		mod_timer(&otg->id_timer, jiffies +
+				 msecs_to_jiffies(OTG_ID_POLL_MS));
+#endif
 		msm72k_pullup_internal(&ui->gadget, 1);
 	}
 	enable_irq(otg->irq);
@@ -442,23 +447,6 @@ static int usb_ep_get_stall(struct msm_endpoint *ept)
 		return (CTRL_TXS & n) ? 1 : 0;
 	else
 		return (CTRL_RXS & n) ? 1 : 0;
-}
-
-static void ulpi_write(struct usb_info *ui, unsigned val, unsigned reg)
-{
-	unsigned timeout = 10000;
-
-	/* initiate write operation */
-	writel(ULPI_RUN | ULPI_WRITE |
-	       ULPI_ADDR(reg) | ULPI_DATA(val),
-	       USB_ULPI_VIEWPORT);
-
-	/* wait for completion */
-	while ((readl(USB_ULPI_VIEWPORT) & ULPI_RUN) && (--timeout))
-		;
-
-	if (timeout == 0)
-		dev_err(&ui->pdev->dev, "ulpi_write: timeout\n");
 }
 
 static void init_endpoints(struct usb_info *ui)
@@ -728,25 +716,81 @@ static void ep0_complete(struct usb_ep *ep, struct usb_request *req)
 		req->complete(&ui->ep0in.ep, req);
 }
 
+static void ep0_status_complete(struct usb_ep *ep, struct usb_request *_req)
+{
+	struct usb_request *req = _req->context;
+	struct msm_request *r;
+	struct msm_endpoint *ept;
+	struct usb_info *ui;
+
+	pr_debug("%s:\n", __func__);
+	if (!req)
+		return;
+
+	r = to_msm_request(req);
+	ept = to_msm_endpoint(ep);
+	ui = ept->ui;
+	_req->context = 0;
+
+	req->complete = r->gadget_complete;
+	req->zero = 0;
+	r->gadget_complete = 0;
+	if (req->complete)
+		req->complete(&ui->ep0in.ep, req);
+
+}
+
+static void ep0_status_phase(struct usb_ep *ep, struct usb_request *req)
+{
+	struct msm_endpoint *ept = to_msm_endpoint(ep);
+	struct usb_info *ui = ept->ui;
+
+	pr_debug("%s:\n", __func__);
+
+	req->length = 0;
+	req->complete = ep0_status_complete;
+
+	/* status phase */
+	if (atomic_read(&ui->ep0_dir) == USB_DIR_IN)
+		usb_ept_queue_xfer(&ui->ep0out, req);
+	else
+		usb_ept_queue_xfer(&ui->ep0in, req);
+}
+
+static void ep0in_send_zero_leng_pkt(struct msm_endpoint *ept)
+{
+	struct usb_info *ui = ept->ui;
+	struct usb_request *req = ui->setup_req;
+
+	pr_debug("%s:\n", __func__);
+
+	req->length = 0;
+	req->complete = ep0_status_phase;
+	usb_ept_queue_xfer(&ui->ep0in, req);
+}
+
 static void ep0_queue_ack_complete(struct usb_ep *ep,
 	struct usb_request *_req)
 {
-	struct msm_request *r = to_msm_request(_req);
 	struct msm_endpoint *ept = to_msm_endpoint(ep);
 	struct usb_info *ui = ept->ui;
 	struct usb_request *req = ui->setup_req;
 
+	pr_debug("%s: _req:%p actual:%d length:%d zero:%d\n",
+			__func__, _req, _req->actual,
+			_req->length, _req->zero);
+
 	/* queue up the receive of the ACK response from the host */
 	if (_req->status == 0 && _req->actual == _req->length) {
-		req->length = 0;
-		if (atomic_read(&ui->ep0_dir) == USB_DIR_IN)
-			usb_ept_queue_xfer(&ui->ep0out, req);
-		else
-			usb_ept_queue_xfer(&ui->ep0in, req);
-		_req->complete = r->gadget_complete;
-		r->gadget_complete = 0;
-		if (_req->complete)
-			_req->complete(&ui->ep0in.ep, _req);
+		req->context = _req;
+		if (atomic_read(&ui->ep0_dir) == USB_DIR_IN) {
+			if (_req->zero && _req->length &&
+					!(_req->length % ep->maxpacket)) {
+				ep0in_send_zero_leng_pkt(&ui->ep0in);
+				return;
+			}
+		}
+		ep0_status_phase(ep, req);
 	} else
 		ep0_complete(ep, _req);
 }
@@ -2064,7 +2108,7 @@ static int msm72k_pullup_internal(struct usb_gadget *_gadget, int is_active)
 	} else {
 		writel(readl(USB_USBCMD) & ~USBCMD_RS, USB_USBCMD);
 		/* S/W workaround, Issue#1 */
-		ulpi_write(ui, 0x48, 0x04);
+		otg_io_write(ui->xceiv, 0x48, 0x04);
 	}
 
 	return 0;
@@ -2510,6 +2554,10 @@ int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
 	dev->state = USB_STATE_IDLE;
 	atomic_set(&dev->configured, 0);
 	switch_set_state(&dev->sdev, 0);
+	/* cancel pending ep0 transactions */
+	flush_endpoint(&dev->ep0out);
+	flush_endpoint(&dev->ep0in);
+
 	device_remove_file(&dev->gadget.dev, &dev_attr_wakeup);
 	device_remove_file(&dev->gadget.dev, &dev_attr_usb_state);
 	device_remove_file(&dev->gadget.dev, &dev_attr_usb_speed);
