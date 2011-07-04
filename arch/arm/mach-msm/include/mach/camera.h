@@ -29,10 +29,20 @@
 #include <mach/board.h>
 #include <media/msm_camera.h>
 
+#undef CCRT
+#undef CINF
+#undef CDBG
+
 #define CONFIG_MSM_CAMERA_DEBUG
 #ifdef CONFIG_MSM_CAMERA_DEBUG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
+#define CCRT(fmt, args...) pr_debug(fmt, ##args)
+#define CINF(fmt, args...) pr_debug(fmt, ##args)
+#define CDBG(fmt, args...) pr_debug(fmt, ##args)
 #else
+#define CDBG(fmt, args...) do { } while (0)
+#define CCRT(fmt, args...) do { } while (0)
+#define CINF(fmt, args...) do { } while (0)
 #define CDBG(fmt, args...) do { } while (0)
 #endif
 
@@ -452,6 +462,14 @@ enum msm_bus_perf_setting {
 	S_CAPTURE,
 	S_DEFAULT,
 	S_EXIT
+};
+
+enum msm_camera_pwr_mode_t {
+	MSM_CAMERA_PWRUP_MODE = 0,
+	MSM_CAMERA_STANDBY_MODE,
+	MSM_CAMERA_NORMAL_MODE,
+	MSM_CAMERA_PWRDWN_MODE,
+	MSM_CAMERA_PWR_MODE_MAX
 };
 
 int msm_camio_enable(struct platform_device *dev);
