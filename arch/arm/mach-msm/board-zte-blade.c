@@ -2349,7 +2349,7 @@ static void __init msm7x2x_init(void)
 
 #endif /* CONFIG_USB_MSM_OTG_72K */
 
-	msm_init_pmic_vibrator(); 
+	//msm_init_pmic_vibrator(); 
 
 
 	platform_add_devices(devices, ARRAY_SIZE(devices));
