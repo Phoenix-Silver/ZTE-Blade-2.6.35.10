@@ -160,6 +160,41 @@ config MACH_MSM7X27_FFA
 	help
 	  Support for the Qualcomm MSM7x27 FFA eval board.
 
+config ZTE_PLATFORM
+	bool "ZTE Platform"
+	default y
+	help
+		Global macro for ZTE code
+
+config F3_LOG
+	depends on ARCH_MSM
+	depends on !MSM_STACKED_MEMORY
+	default y
+	bool "F3 Log"
+	help
+			Support for F3 log.
+
+config MACH_BLADE
+	depends on ARCH_MSM7X27
+	depends on !MSM_STACKED_MEMORY
+	default n
+	bool "ZTE BLADE"
+	depends on ZTE_PLATFORM
+	help
+			Support for the ZTE MSM7x27 Blade phone.
+
+config MACH_BLADE_CAMERA5MP
+	depends on MACH_BLADE
+	bool "ZTE blade board,5MP camera."
+	help
+			Support for the ZTE blade board,5MP camera.
+
+config ZTE_FTM_FLAG_SUPPORT
+	depends on ZTE_PLATFORM
+	bool "enable ZTE handset FTM mode detect."
+	help
+		Enable ZTE Handset FTM mode detection.
+
 config MACH_MSM7X30_SURF
        depends on ARCH_MSM7X30
        depends on !MSM_STACKED_MEMORY
@@ -175,6 +210,7 @@ config MACH_MSM7X30_FFA
        bool "MSM7x30 FFA"
        help
          Support for the Qualcomm MSM7x30 FFA eval board.
+
 
 config MACH_MSM7X30_FLUID
        depends on ARCH_MSM7X30
@@ -354,6 +390,15 @@ endmenu
 
 source "arch/arm/mach-msm/lge/Kconfig"
 
+config ZTE_BLADE_GEN2
+  bool "ZTE Blade Generation 2"
+  depends on MACH_BLADE
+  default n
+  help
+    This option is used to indicate if the kernel is to be compiled
+    for a ZTE Blade Generation 2 (phone that is sold with Android 2.2
+    and loads the kernel to 0x02600000.)
+		
 config MSM_STACKED_MEMORY
 	bool "Stacked Memory"
 	default y
@@ -368,6 +413,8 @@ config PHYS_OFFSET
 	default "0x12800000" if MACH_MSM7X27_THUNDERG
 	default "0x12200000" if MACH_MSM7X27_THUNDERC
 	default "0x12800000" if MACH_MSM7X27_THUNDERA
+	default "0x02600000" if ZTE_BLADE_GEN2
+	default "0x02A00000" if !ZTE_BLADE_GEN2
 	default "0x00200000" if !MSM_STACKED_MEMORY
 	default "0x00000000" if ARCH_QSD8X50 && MSM_SOC_REV_A
 	default "0x20000000" if ARCH_QSD8X50

@@ -3209,3 +3209,11 @@ ast2200			MACH_AST2200		AST2200			3221
 lead			MACH_LEAD		LEAD			3222
 unino1			MACH_UNINO1		UNINO1			3223
 msm8x60_qt		MACH_MSM8X60_QT		MSM8X60_QT		3298
+raise	        	MACH_RAISE          	RAISE           	1009001
+mooncake	    	MACH_MOONCAKE       	MOONCAKE        	1009002
+joe             	MACH_JOE            	JOE             	1009003
+blade			MACH_BLADE		BLADE			1009004
+smooth	    		MACH_SMOOTH       	SMOOTH        		1009005
+r750       		MACH_R750        	R750                 	1009006
+v9       		MACH_V9        	V9                 	1009007
+

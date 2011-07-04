@@ -188,3 +188,4 @@ obj-$(CONFIG_MSM_SLEEP_STATS) += msm_sleep_stats.o idle_stats.o
 obj-$(CONFIG_MACH_LGE) += lge/
 obj-$(CONFIG_MSM_SHOW_RESUME_IRQ) += msm_show_resume_irq.o
 obj-$(CONFIG_BT_MSM_PINTEST)  += btpintest.o
+obj-$(CONFIG_MACH_BLADE) += board-zte-blade-keypad.o board-zte-blade.o
