@@ -495,13 +495,14 @@ static int __init msm_init_gpio(void)
 }
 
 postcore_initcall(msm_init_gpio);
-
+#if 0
 int gpio_tlmm_config(unsigned config, unsigned disable)
 {
 	return msm_proc_comm(PCOM_RPC_GPIO_TLMM_CONFIG_EX, &config, &disable);
 }
 EXPORT_SYMBOL(gpio_tlmm_config);
-
+#endif
+#if 0
 int msm_gpios_request_enable(const struct msm_gpio *table, int size)
 {
 	int rc = msm_gpios_request(table, size);
@@ -513,14 +514,16 @@ int msm_gpios_request_enable(const struct msm_gpio *table, int size)
 	return rc;
 }
 EXPORT_SYMBOL(msm_gpios_request_enable);
-
+#endif
+#if 0
 void msm_gpios_disable_free(const struct msm_gpio *table, int size)
 {
 	msm_gpios_disable(table, size);
 	msm_gpios_free(table, size);
 }
 EXPORT_SYMBOL(msm_gpios_disable_free);
-
+#endif
+#if 0
 int msm_gpios_request(const struct msm_gpio *table, int size)
 {
 	int rc;
@@ -541,7 +544,9 @@ err:
 	return rc;
 }
 EXPORT_SYMBOL(msm_gpios_request);
+#endif
 
+#if 0
 void msm_gpios_free(const struct msm_gpio *table, int size)
 {
 	int i;
@@ -552,7 +557,8 @@ void msm_gpios_free(const struct msm_gpio *table, int size)
 	}
 }
 EXPORT_SYMBOL(msm_gpios_free);
-
+#endif
+#if 0
 int msm_gpios_enable(const struct msm_gpio *table, int size)
 {
 	int rc;
@@ -578,7 +584,8 @@ err:
 	return rc;
 }
 EXPORT_SYMBOL(msm_gpios_enable);
-
+#endif
+#if 0
 int msm_gpios_disable(const struct msm_gpio *table, int size)
 {
 	int rc = 0;
@@ -604,7 +611,7 @@ int msm_gpios_disable(const struct msm_gpio *table, int size)
 	return rc;
 }
 EXPORT_SYMBOL(msm_gpios_disable);
-
+#endif
 /* Locate the GPIO_OUT register for the given GPIO and return its address
  * and the bit position of the gpio's bit within the register.
  *
