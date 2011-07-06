@@ -80,7 +80,7 @@
 #define PMEM_KERNEL_EBI1_SIZE	0x1C000
 #endif
 
-/*static smem_global *global;*/
+static smem_global *global;
 static int g_zte_ftm_flag_fixup;
 
 
@@ -341,10 +341,10 @@ static struct usb_composition usb_func_composition[] = {
 static struct msm_hsusb_platform_data msm_hsusb_pdata = {
 	.version	= 0x0100,
 	.phy_info	= (USB_PHY_INTEGRATED | USB_PHY_MODEL_65NM),
-	.vendor_id          = 0x5c6,
-	.product_name       = "Qualcomm HSUSB Device",
+	.vendor_id          = 0x1d92,
+	.product_name       = "ZTE HSUSB Device",
 	.serial_number      = "1234567890ABCDEF",
-	.manufacturer_name  = "Qualcomm Incorporated",
+	.manufacturer_name  = "ZTE Incorporated",
 	.compositions	= usb_func_composition,
 	.num_compositions = ARRAY_SIZE(usb_func_composition),
 	.function_map   = usb_functions_map,
@@ -1997,6 +1997,12 @@ static void __init msm7x2x_init(void)
 		msm_pm_set_platform_data(msm7x25_pm_data,
 					ARRAY_SIZE(msm7x25_pm_data));
 	msm7x27_wlan_init();
+	//
+	global = ioremap(SMEM_LOG_GLOBAL_BASE, sizeof(smem_global));
+	if (!global) {
+		printk(KERN_ERR "ioremap failed with SCL_SMEM_LOG_RAM_BASE\n");
+		return;
+	}
 }
 
 static unsigned pmem_kernel_ebi1_size = PMEM_KERNEL_EBI1_SIZE;
@@ -2044,6 +2050,12 @@ static void __init msm_msm7x2x_allocate_memory_regions(void)
 	void *addr;
 	unsigned long size;
 
+#if defined(CONFIG_ZTE_PLATFORM) && defined(CONFIG_F3_LOG)
+    unsigned int len;
+    smem_global *global_tmp = (smem_global *)(MSM_RAM_LOG_BASE + PAGE_SIZE) ;
+    len = global_tmp->f3log;
+#endif
+
 	size = pmem_mdp_size;
 	if (size) {
 		addr = alloc_bootmem(size);
@@ -2086,6 +2098,24 @@ static void __init msm_msm7x2x_allocate_memory_regions(void)
 		pr_info("allocating %lu bytes at %p (%lx physical) for kernel"
 			" ebi1 pmem arena\n", size, addr, __pa(addr));
 	}
+//#if defined(CONFIG_ZTE_PLATFORM) && defined(CONFIG_F3_LOG)
+	pr_info("length = %d ++ \n", len);
+
+	if (len > 12)
+		len = 12;
+	else
+		len = len/2*2;
+			    
+    pr_info("length = %d -- \n", len);
+    size = len;
+   
+	if (size) reserve_bootmem(0x08D00000, size*0x100000, BOOTMEM_DEFAULT);
+
+	addr = phys_to_virt(0x08D00000);
+	pr_info("allocating %lu M at %p (%lx physical) for F3\n",size, addr, __pa(addr));
+
+//#endif 
+
 }
 
 static void __init msm7x2x_map_io(void)
