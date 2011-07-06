@@ -5,14 +5,6 @@ ifeq ($(CONFIG_USB_GADGET_DEBUG),y)
 	EXTRA_CFLAGS		+= -DDEBUG
 endif
 
-# LGE_CHANGE
-# Add lge usb utility code
-# FIXME: Compilation of this code must be performed
-# earlier than gadget code because of using dynamic debugging macro.
-# 2011-01-18, hyunhui.park@lge.com
-# LG specific
-obj-$(CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET)	+= u_lgeusb.o
-
 obj-$(CONFIG_USB_DUMMY_HCD)	+= dummy_hcd.o
 obj-$(CONFIG_USB_NET2280)	+= net2280.o
 obj-$(CONFIG_USB_AMD5536UDC)	+= amd5536udc.o
@@ -75,19 +67,19 @@ obj-$(CONFIG_USB_G_WEBCAM)	+= g_webcam.o
 obj-$(CONFIG_USB_ANDROID)	+= android.o
 obj-$(CONFIG_USB_QCOM_MAEMO)    += qcom_maemo.o
 obj-$(CONFIG_USB_ANDROID_ACM)	+= f_acm.o u_serial.o
+obj-$(CONFIG_USB_ANDROID_ACM_SDIO)	+= f_acm.o u_sdio.o
+obj-$(CONFIG_USB_ANDROID_ACM_SMD)	+= f_acm.o u_smd.o
 obj-$(CONFIG_USB_F_SERIAL)	+= f_serial.o u_serial.o
+obj-$(CONFIG_USB_F_SERIAL_SDIO)	+= f_serial.o u_sdio.o
+obj-$(CONFIG_USB_F_SERIAL_SMD)	+= f_serial.o u_smd.o
 obj-$(CONFIG_USB_ANDROID_ADB)	+= f_adb.o
 obj-$(CONFIG_USB_ANDROID_MASS_STORAGE)	+= f_mass_storage.o
 obj-$(CONFIG_USB_ANDROID_MTP)	+= f_mtp.o
 obj-$(CONFIG_USB_ANDROID_RNDIS)	+= f_rndis.o u_ether.o
-obj-$(CONFIG_USB_ANDROID_CDC_ECM)	+= f_ecm.o u_ether.o
-obj-$(CONFIG_USB_SUPPORT_LGE_ANDROID_AUTORUN)	+= f_cdrom_storage.o
-obj-$(CONFIG_USB_SUPPORT_LGE_ANDROID_AUTORUN)	+= f_charge_only.o
 
 # MSM specific
 obj-$(CONFIG_USB_ANDROID_DIAG)	+= f_diag.o
 obj-$(CONFIG_USB_ANDROID_RMNET)	+= f_rmnet.o
 obj-$(CONFIG_USB_ANDROID_RMNET_SDIO)   += f_rmnet_sdio.o
-
-
+obj-$(CONFIG_USB_ANDROID_RMNET_SMD_SDIO)   += f_rmnet_smd_sdio.o
 

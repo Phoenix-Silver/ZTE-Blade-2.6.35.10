@@ -1408,7 +1408,7 @@ static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
 		memset(buf+2, 0, 10);	/* None of the fields are changeable */
 
 		if (!changeable_values) {
-			buf[2] = 0x04;	/* Write cache enable, */
+			buf[2] = 0x00;	/* Write cache disable, */
 					/* Read cache not disabled */
 					/* No cache retention priorities */
 			put_unaligned_be16(0xffff, &buf[4]);
@@ -3245,7 +3245,7 @@ fsg_common_from_params(struct fsg_common *common,
 
 static struct fsg_config fsg_cfg;
 
-static int __init fsg_probe(struct platform_device *pdev)
+static int fsg_probe(struct platform_device *pdev)
 {
 	struct usb_mass_storage_platform_data *pdata = pdev->dev.platform_data;
 	int i, nluns;
@@ -3270,8 +3270,9 @@ static int __init fsg_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static struct platform_driver fsg_platform_driver __refdata = {
+static struct platform_driver fsg_platform_driver = {
 	.driver = { .name = FUNCTION_NAME, },
+	.probe = fsg_probe,
 };
 
 int mass_storage_bind_config(struct usb_configuration *c)
@@ -3290,7 +3291,7 @@ static struct android_usb_function mass_storage_function = {
 static int __init init(void)
 {
 	int		rc;
-	rc = platform_driver_probe(&fsg_platform_driver, fsg_probe);
+	rc = platform_driver_register(&fsg_platform_driver);
 	if (rc != 0)
 		return rc;
 	android_register_function(&mass_storage_function);

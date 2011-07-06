@@ -29,13 +29,6 @@
 
 #include <linux/usb/composite.h>
 
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-/* LGE_CHANGE
- * To consider usb CDC class.
- * 2011-03-24, hyunhui.park@lge.com
- */
-#include <linux/usb/cdc.h>
-#endif
 
 /*
  * The code in this file is utility code, used to build a gadget driver
@@ -45,7 +38,7 @@
  */
 
 /* big enough to hold our biggest descriptor */
-#define USB_BUFSIZ	1024
+#define USB_BUFSIZ	4096
 
 static struct usb_composite_driver *composite;
 
@@ -104,7 +97,7 @@ static ssize_t enable_store(
 	return size;
 }
 
-static DEVICE_ATTR(enable, S_IRUGO | S_IWUSR | S_IWGRP, enable_show, enable_store);
+static DEVICE_ATTR(enable, S_IRUGO | S_IWUSR, enable_show, enable_store);
 
 void usb_function_set_enabled(struct usb_function *f, int enabled)
 {
@@ -119,10 +112,7 @@ void usb_composite_force_reset(struct usb_composite_dev *cdev)
 
 	spin_lock_irqsave(&cdev->lock, flags);
 	/* force reenumeration */
-	if (cdev && cdev->gadget &&
-			cdev->gadget->speed != USB_SPEED_UNKNOWN) {
-		/* avoid sending a disconnect switch event until after we disconnect */
-		cdev->mute_switch = 1;
+	if (cdev && cdev->gadget && cdev->gadget->speed != USB_SPEED_UNKNOWN) {
 		spin_unlock_irqrestore(&cdev->lock, flags);
 
 		usb_gadget_disconnect(cdev->gadget);
@@ -310,14 +300,6 @@ static int config_buf(struct usb_configuration *config,
 {
 	struct usb_config_descriptor	*c = buf;
 	struct usb_interface_descriptor *intf;
-	struct usb_interface_assoc_descriptor *iad = NULL;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-	/* LGE_CHANGE
-	 * Set master and slave interface of cdc union descriptor.
-	 * 2011-03-24, hyunhui.park@lge.com
-	 */
-	struct usb_cdc_union_desc *union_desc = NULL;
-#endif
 	void				*next = buf + USB_DT_CONFIG_SIZE;
 	int				len = USB_BUFSIZ - USB_DT_CONFIG_SIZE;
 	struct usb_function		*f;
@@ -365,47 +347,20 @@ static int config_buf(struct usb_configuration *config,
 		dest = next;
 		while ((descriptor = *descriptors++) != NULL) {
 			intf = (struct usb_interface_descriptor *)dest;
+			if (intf->bDescriptorType ==
+					USB_DT_INTERFACE_ASSOCIATION) {
+				struct usb_interface_assoc_descriptor *iad =
+				  (struct usb_interface_assoc_descriptor *)dest;
+
+				iad->bFirstInterface = interfaceCount;
+			}
 			if (intf->bDescriptorType == USB_DT_INTERFACE) {
 				/* don't increment bInterfaceNumber for alternate settings */
 				if (intf->bAlternateSetting == 0)
 					intf->bInterfaceNumber = interfaceCount++;
 				else
 					intf->bInterfaceNumber = interfaceCount - 1;
-				if (iad) {
-					iad->bFirstInterface =
-							intf->bInterfaceNumber;
-					iad = NULL;
-				}
-			} else if (intf->bDescriptorType ==
-					USB_DT_INTERFACE_ASSOCIATION) {
-				/* This will be first if it exists. Save
-				 * a pointer to it so we can properly set
-				 * bFirstInterface when we process the first
-				 * interface.
-				 */
-				iad = (struct usb_interface_assoc_descriptor *)
-						dest;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-			/* LGE_CHANGE
-			 * Set master and slave interface of cdc union descriptor.
-			 * 2011-03-24, hyunhui.park@lge.com
-			 */
-			} else if (intf->bDescriptorType == USB_DT_CS_INTERFACE) {
-				/* If descriptor is cdc union type,
-				 * we set bMasterInterface0 and bSlaveInterface0.
-				 * It is for CDC class.
-				 */
-				union_desc = (struct usb_cdc_union_desc *)dest;
-				if (union_desc->bDescriptorSubType == USB_CDC_UNION_TYPE) {
-					union_desc->bMasterInterface0 = interfaceCount -1;
-					union_desc->bSlaveInterface0 = interfaceCount;
-					DBG(config->cdev, "composite.c:(%s) %d, %d\n",
-							f->name,
-							union_desc->bMasterInterface0,
-							union_desc->bSlaveInterface0);
-				}
 			}
-#endif
 			dest += intf->bLength;
 		}
 
@@ -542,13 +497,13 @@ static int set_config(struct usb_composite_dev *cdev,
 		result = 0;
 
 	INFO(cdev, "%s speed config #%d: %s\n",
-			({ char *speed;
-			 switch (gadget->speed) {
-			 case USB_SPEED_LOW:	speed = "low"; break;
-			 case USB_SPEED_FULL:	speed = "full"; break;
-			 case USB_SPEED_HIGH:	speed = "high"; break;
-			 default:		speed = "?"; break;
-			 }; speed; }), number, c ? c->label : "unconfigured");
+		({ char *speed;
+		switch (gadget->speed) {
+		case USB_SPEED_LOW:	speed = "low"; break;
+		case USB_SPEED_FULL:	speed = "full"; break;
+		case USB_SPEED_HIGH:	speed = "high"; break;
+		default:		speed = "?"; break;
+		} ; speed; }), number, c ? c->label : "unconfigured");
 
 	if (!c)
 		goto done;
@@ -562,9 +517,6 @@ static int set_config(struct usb_composite_dev *cdev,
 
 		if (!f)
 			break;
-
-		VDBG(cdev, "set_config: interface[%d] = %s\n", tmp, f->name);
-
 		if (f->disabled)
 			continue;
 
@@ -863,13 +815,14 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	u8				endp;
 	int tmp = intf;
 	int id = 0;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-	/* LGE_CHANGE
-	 * For finding correct interface number.
-	 * 2011-03-24, hyunhui.park@lge.com
-	 */
-	int cnt = 0;
-#endif
+	unsigned long			flags;
+
+	spin_lock_irqsave(&cdev->lock, flags);
+	if (!cdev->connected) {
+		cdev->connected = 1;
+		schedule_work(&cdev->switch_work);
+	}
+	spin_unlock_irqrestore(&cdev->lock, flags);
 
 	/* partial re-init of the response message; the function or the
 	 * gadget might need to intercept e.g. a control-OUT completion
@@ -968,112 +921,23 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
 			break;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-		/* LGE_CHANGE
-		 * Android gadget which added usb switching feature
-		 * intends to handle interface IDs properly. But, handling of request
-		 * for set interface and get interface could not find correct
-		 * function and interface number. It is fix for this.
-		 * By this fix, android gadget can handle CDC ECM class correctly.
-		 * LGE uses this for USB Tethering.
-		 * 2011-03-24, hyunhui.park@lge.com
-		 */
-		/* Find correct function */
-		for (id = 0, cnt = 0; id < MAX_CONFIG_INTERFACES; id++) {
-			f = cdev->config->interface[id];
-			if (!f)
-				break;
-			if (f->disabled) {
-				cnt++;
-				continue;
-			}
-			if (!tmp)
-				break;
-			tmp--;
-		}
-
-		if (tmp)
-			f = NULL;
-
-		DBG(cdev, "USB_REQ_SET_INTERFACE:(%s) intf = %d, w_value = %d, \
-				cnt = %d\n", (f ? f->name : "null"), intf, w_value, cnt);
-#else
 		f = cdev->config->interface[intf];
-#endif
 		if (!f)
 			break;
 		if (w_value && !f->set_alt)
 			break;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-		/* LGE_CHANGE
-		 * Android gadget which added usb switching feature
-		 * intends to handle interface IDs properly. But, handling of request
-		 * for set interface and get interface could not find correct
-		 * function and interface number. It is fix for this.
-		 * By this fix, android gadget can handle CDC ECM class correctly.
-		 * LGE uses this for USB Tethering.
-		 * 2011-03-24, hyunhui.park@lge.com
-		 */
-		value = f->set_alt(f, w_index + cnt, w_value);
-#else
 		value = f->set_alt(f, w_index, w_value);
-#endif
 		break;
 	case USB_REQ_GET_INTERFACE:
 		if (ctrl->bRequestType != (USB_DIR_IN|USB_RECIP_INTERFACE))
 			goto unknown;
 		if (!cdev->config || w_index >= MAX_CONFIG_INTERFACES)
 			break;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-		/* LGE_CHANGE
-		 * Android gadget which added usb switching feature
-		 * intends to handle interface IDs properly. But, handling of request
-		 * for set interface and get interface could not find correct
-		 * function and interface number. It is fix for this.
-		 * By this fix, android gadget can handle CDC ECM class correctly.
-		 * LGE uses this for USB Tethering.
-		 * 2011-03-24, hyunhui.park@lge.com
-		 */
-		/* Find correct function */
-		for (id = 0, cnt = 0; id < MAX_CONFIG_INTERFACES; id++) {
-			f = cdev->config->interface[id];
-			if (!f)
-				break;
-			if (f->disabled) {
-				cnt++;
-				continue;
-			}
-			if (!tmp)
-				break;
-			tmp--;
-		}
-
-		if (tmp)
-			f = NULL;
-
-		DBG(cdev, "USB_REQ_GET_INTERFACE:(%s) intf = %d, w_value = %d, \
-				cnt = %d\n", (f ? f->name : "null"), intf, w_value, cnt);
-#else
 		f = cdev->config->interface[intf];
-#endif
 		if (!f)
 			break;
-#ifdef CONFIG_USB_SUPPORT_LGE_ANDROID_GADGET
-		/* LGE_CHANGE
-		 * Android gadget which added usb switching feature
-		 * intends to handle interface IDs properly. But, handling of request
-		 * for set interface and get interface could not find correct
-		 * function and interface number. It is fix for this.
-		 * By this fix, android gadget can handle CDC ECM class correctly.
-		 * LGE uses this for USB Tethering.
-		 * 2011-03-24, hyunhui.park@lge.com
-		 */
-		/* lots of interfaces only need altsetting zero... */
-		value = f->get_alt ? f->get_alt(f, w_index + cnt) : 0;
-#else
 		/* lots of interfaces only need altsetting zero... */
 		value = f->get_alt ? f->get_alt(f, w_index) : 0;
-#endif
 		if (value < 0)
 			break;
 		*((u8 *)req->buf) = value;
@@ -1190,10 +1054,8 @@ static void composite_disconnect(struct usb_gadget *gadget)
 	if (cdev->config)
 		reset_config(cdev);
 
-	if (cdev->mute_switch)
-		cdev->mute_switch = 0;
-	else
-		schedule_work(&cdev->switch_work);
+	cdev->connected = 0;
+	schedule_work(&cdev->switch_work);
 	spin_unlock_irqrestore(&cdev->lock, flags);
 }
 
@@ -1259,8 +1121,8 @@ composite_unbind(struct usb_gadget *gadget)
 		kfree(cdev->req->buf);
 		usb_ep_free_request(gadget->ep0, cdev->req);
 	}
-
-	switch_dev_unregister(&cdev->sdev);
+	switch_dev_unregister(&cdev->sw_connected);
+	switch_dev_unregister(&cdev->sw_config);
 	kfree(cdev);
 	set_gadget_data(gadget, NULL);
 	device_remove_file(&gadget->dev, &dev_attr_suspended);
@@ -1295,11 +1157,22 @@ composite_switch_work(struct work_struct *data)
 	struct usb_composite_dev	*cdev =
 		container_of(data, struct usb_composite_dev, switch_work);
 	struct usb_configuration *config = cdev->config;
+	int connected;
+	unsigned long flags;
+
+	spin_lock_irqsave(&cdev->lock, flags);
+	if (cdev->connected != cdev->sw_connected.state) {
+		connected = cdev->connected;
+		spin_unlock_irqrestore(&cdev->lock, flags);
+		switch_set_state(&cdev->sw_connected, connected);
+	} else {
+		spin_unlock_irqrestore(&cdev->lock, flags);
+	}
 
 	if (config)
-		switch_set_state(&cdev->sdev, config->bConfigurationValue);
+		switch_set_state(&cdev->sw_config, config->bConfigurationValue);
 	else
-		switch_set_state(&cdev->sdev, 0);
+		switch_set_state(&cdev->sw_config, 0);
 }
 
 static int composite_bind(struct usb_gadget *gadget)
@@ -1337,14 +1210,6 @@ static int composite_bind(struct usb_gadget *gadget)
 	 */
 	usb_ep_autoconfig_reset(cdev->gadget);
 
-	/* standardized runtime overrides for device ID data */
-	if (idVendor)
-		cdev->desc.idVendor = cpu_to_le16(idVendor);
-	if (idProduct)
-		cdev->desc.idProduct = cpu_to_le16(idProduct);
-	if (bcdDevice)
-		cdev->desc.bcdDevice = cpu_to_le16(bcdDevice);
-
 	/* composite gadget needs to assign strings for whole device (like
 	 * serial number), register function drivers, potentially update
 	 * power state and consumption, etc
@@ -1353,14 +1218,26 @@ static int composite_bind(struct usb_gadget *gadget)
 	if (status < 0)
 		goto fail;
 
-	cdev->sdev.name = "usb_configuration";
-	status = switch_dev_register(&cdev->sdev);
+	cdev->sw_connected.name = "usb_connected";
+	status = switch_dev_register(&cdev->sw_connected);
+	if (status < 0)
+		goto fail;
+	cdev->sw_config.name = "usb_configuration";
+	status = switch_dev_register(&cdev->sw_config);
 	if (status < 0)
 		goto fail;
 	INIT_WORK(&cdev->switch_work, composite_switch_work);
 
 	cdev->desc = *composite->dev;
 	cdev->desc.bMaxPacketSize0 = gadget->ep0->maxpacket;
+
+	/* standardized runtime overrides for device ID data */
+	if (idVendor)
+		cdev->desc.idVendor = cpu_to_le16(idVendor);
+	if (idProduct)
+		cdev->desc.idProduct = cpu_to_le16(idProduct);
+	if (bcdDevice)
+		cdev->desc.bcdDevice = cpu_to_le16(bcdDevice);
 
 	/* strings can't be assigned before bind() allocates the
 	 * releavnt identifiers

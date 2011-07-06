@@ -1983,7 +1983,7 @@ static void __init msm7x2x_init(void)
 	lcdc_lead_gpio_init();
 	
 	msm_fb_add_devices();
-#ifdef CONFIG_USB_EHCI_MSM_72K
+#ifdef CONFIG_USB_EHCI_MSM
 	msm7x2x_init_host();
 #endif /* CONFIG_USB_EHCI_MSM_72K */
 

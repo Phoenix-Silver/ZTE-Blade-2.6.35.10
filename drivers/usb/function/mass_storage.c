@@ -2736,23 +2736,7 @@ static void fsg_bind(void *_ctxt)
 	char			*pathbuf, *p;
 	struct usb_function	*usb_func = &fsg_function;
 	struct usb_endpoint *ep;
-   
-#if defined(CONFIG_LGE_UMS_WORKAROUND_PATCH)
-	int nCount = 0;
 
-	/* LG_FW khlee 2010.01.20 :  
-	 * After composite switching, Mass driver is not working.   
-	 * to prevent the binding until mass thread is killed.  */  
-	while(fsg->thread_task != NULL)
-	{
-		msleep(10);
-		pr_err("LG_FW in fsg_bind thread: %d\n",(int)fsg->thread_task); 
-
-		if( nCount++ > 20)
-			break;
-	}
-	/*LGE_CHANGE_E[kyuhyung.lee@lge.com - #endif*/
-#endif
 
 	dev_attr_file.attr.mode = 0644;
 	fsg->running = 0;
@@ -2782,13 +2766,8 @@ static void fsg_bind(void *_ctxt)
 		curlun->dev.release = lun_release;
 		curlun->dev.parent = &fsg->pdev->dev;
 		dev_set_drvdata(&curlun->dev, fsg);
-      /* DKL Temp : For 2.6.32 thunder kernel build */
-#if 0      
 		snprintf(curlun->dev.bus_id, BUS_ID_SIZE,
 				"lun%d", i);
-#else
-      dev_set_name(&curlun->dev, "lun%d", i);
-#endif      
 
 		rc = device_register(&curlun->dev);
 		if (rc != 0) {
