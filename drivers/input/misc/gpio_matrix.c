@@ -12,7 +12,6 @@
  * GNU General Public License for more details.
  *
  */
-
 #include <linux/kernel.h>
 #include <linux/gpio.h>
 #include <linux/gpio_event.h>
@@ -34,6 +33,7 @@ struct gpio_kp {
 	unsigned int disabled_irq:1;
 	unsigned long keys_pressed[0];
 };
+
 
 static void clear_phantom_key(struct gpio_kp *kp, int out, int in)
 {
@@ -279,11 +279,13 @@ static int gpio_keypad_request_irqs(struct gpio_kp *kp)
 				"irq %d\n", mi->input_gpios[i], irq);
 			goto err_request_irq_failed;
 		}
+		#ifndef CONFIG_ZTE_PLATFORM
 		err = set_irq_wake(irq, 1);
 		if (err) {
 			pr_err("gpiomatrix: set_irq_wake failed for input %d, "
 				"irq %d\n", mi->input_gpios[i], irq);
 		}
+		#endif
 		disable_irq(irq);
 		if (kp->disabled_irq) {
 			kp->disabled_irq = 0;
@@ -335,6 +337,7 @@ int gpio_event_matrix_func(struct gpio_event_input_devs *input_devs,
 		}
 		kp->input_devs = input_devs;
 		kp->keypad_info = mi;
+		//set_bit(EV_KEY, input_dev->evbit);
 		for (i = 0; i < key_count; i++) {
 			unsigned short keyentry = mi->keymap[i];
 			unsigned short keycode = keyentry & MATRIX_KEY_MASK;
@@ -346,12 +349,19 @@ int gpio_event_matrix_func(struct gpio_event_input_devs *input_devs,
 				err = -EINVAL;
 				goto err_bad_keymap;
 			}
+
 			if (keycode && keycode <= KEY_MAX)
 				input_set_capability(input_devs->dev[dev],
 							EV_KEY, keycode);
 		}
 
 		for (i = 0; i < mi->noutputs; i++) {
+			if (gpio_cansleep(mi->output_gpios[i])) {
+				pr_err("gpiomatrix: unsupported output gpio %d,"
+					" can sleep\n", mi->output_gpios[i]);
+				err = -EINVAL;
+				goto err_request_output_gpio_failed;
+			}
 			err = gpio_request(mi->output_gpios[i], "gpio_kp_out");
 			if (err) {
 				pr_err("gpiomatrix: gpio_request failed for "
@@ -406,7 +416,6 @@ int gpio_event_matrix_func(struct gpio_event_input_devs *input_devs,
 		if (kp->use_irq)
 			wake_lock(&kp->wake_lock);
 		hrtimer_start(&kp->timer, ktime_set(0, 0), HRTIMER_MODE_REL);
-
 		return 0;
 	}
 

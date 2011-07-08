@@ -94,7 +94,7 @@ static struct map_desc msm_io_desc[] __initdata = {
     },
 
 #endif
-#if 0 #if defined(CONFIG_MACH_LGE)
+#if 0 
 	MSM_DEVICE(WEB),
 #endif
 };
