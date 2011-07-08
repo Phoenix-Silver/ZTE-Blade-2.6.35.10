@@ -46,14 +46,6 @@
 #include <asm/vfp.h>
 #endif
 
-#ifdef CONFIG_MACH_LGE
-#include <mach/board_lge.h>
-#endif
-
-#ifdef CONFIG_MSM_MEMORY_LOW_POWER_MODE_SUSPEND_DEEP_POWER_DOWN
-#include <mach/msm_migrate_pages.h>
-#endif
-
 #include "smd_private.h"
 #include "smd_rpcrouter.h"
 #include "acpuclock.h"
@@ -67,6 +59,12 @@
 #include "spm.h"
 #include "sirc.h"
 
+#ifdef CONFIG_MSM_GPIO_WAKE
+#include <mach/irqs.h>
+#include <mach/gpio.h>
+#include <asm/mach/irq.h>
+#endif
+#include <mach/zte_memlog.h> /* SDUPDATE_MXF_20110309 */
 
 /******************************************************************************
  * Debug Definitions
@@ -82,7 +80,9 @@ enum {
 	MSM_PM_DEBUG_IDLE = 1U << 6,
 };
 
-static int msm_pm_debug_mask;
+/* caozy_debug_20091229 */
+//static int msm_pm_debug_mask;
+static int msm_pm_debug_mask = MSM_PM_DEBUG_SUSPEND | MSM_PM_DEBUG_POWER_COLLAPSE;
 module_param_named(
 	debug_mask, msm_pm_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP
 );
@@ -117,7 +117,6 @@ module_param_named(
 				msm_pm_smem_data->pending_irqs); \
 	} while (0)
 
-#define MAX_NR_CLKS 33
 
 /******************************************************************************
  * Sleep Modes and Parameters
@@ -942,17 +941,64 @@ static struct msm_pm_smem_t *msm_pm_smem_data;
 static uint32_t *msm_pm_reset_vector;
 static atomic_t msm_pm_init_done = ATOMIC_INIT(0);
 
-static int msm_pm_modem_busy(void)
-{
-	if (!(smsm_get_state(SMSM_POWER_MASTER_DEM) & DEM_MASTER_SMSM_READY)) {
-		MSM_PM_DPRINTK(MSM_PM_DEBUG_POWER_COLLAPSE,
-			KERN_INFO, "%s(): master not ready\n", __func__);
-		return -EBUSY;
-	}
+#ifdef CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR
 
-	return 0;
+struct msm_pm_smem_t * get_msm_pm_smem_data(void)
+{
+	return msm_pm_smem_data;
 }
 
+#endif
+
+/*BEGIN LHX_PM_20110324_01 add code to record how long the APP sleeps or keeps awake*/
+extern unsigned pm_modem_sleep_time_get(void);
+struct timespec time_updated_when_sleep_awake;
+void record_sleep_awake_time(bool record_sleep_awake)
+{
+	//record_sleep_awake?: true?record awake time, else record  sleep time
+	struct timespec ts;
+	int time_updated_when_sleep_awake_s;
+	int time_updated_when_sleep_awake_ms;
+	long time_updated_when_sleep_awake_ms_temp;
+	static unsigned amss_sleep_time_ms = 0;
+	unsigned amss_sleep_time_ms_temp = 0;
+	static bool sleep_success_flag = false;  //set true while msm_pm_collapse returned 1 by passing record_sleep_awake as true;
+
+
+	ts = current_kernel_time();
+	time_updated_when_sleep_awake_ms_temp = (long)((ts.tv_sec - time_updated_when_sleep_awake.tv_sec) * MSEC_PER_SEC + (int)((ts.tv_nsec / NSEC_PER_MSEC) - (time_updated_when_sleep_awake.tv_nsec / NSEC_PER_MSEC)));
+	time_updated_when_sleep_awake_s = (int)(time_updated_when_sleep_awake_ms_temp/MSEC_PER_SEC);
+	time_updated_when_sleep_awake_ms = (int)(time_updated_when_sleep_awake_ms_temp - time_updated_when_sleep_awake_s * MSEC_PER_SEC);
+//	MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND|MSM_PM_DEBUG_POWER_COLLAPSE,
+//		KERN_INFO, "%s(): keep: %10d.%03d s !!!!!!!!!!%s\n", __func__,time_updated_when_sleep_awake_s,time_updated_when_sleep_awake_ms,record_sleep_awake?"awake":"sleep");
+	if(record_sleep_awake)//record awake time
+	{
+		sleep_success_flag = true;
+		MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND|MSM_PM_DEBUG_POWER_COLLAPSE,
+		KERN_INFO, "%s(): APP keep: %10d.%03d s !!!!!!!!!!awake\n", __func__,time_updated_when_sleep_awake_s,time_updated_when_sleep_awake_ms);
+		time_updated_when_sleep_awake = ts; 
+	}
+	else	//record sleep time
+	{
+		if(!sleep_success_flag) //only record sleep time while really resume after successfully suspend/sleep;
+		{
+			printk("%s: modem sleep: resume after fail to suspend\n",__func__);
+			return;
+		}
+		sleep_success_flag = false;
+		amss_sleep_time_ms_temp = amss_sleep_time_ms;	//backup previous total sleep time
+		amss_sleep_time_ms  = pm_modem_sleep_time_get();	//get new total sleep time
+		//printk("%s: modem sleep pre: %d  new %d ms\n",__func__,(int)amss_sleep_time_ms_temp ,amss_sleep_time_ms);
+		amss_sleep_time_ms_temp = amss_sleep_time_ms - amss_sleep_time_ms_temp; //get the sleep time through last sleep
+		//printk("%s: modem sleep this time: %d ms\n",__func__,(int)amss_sleep_time_ms_temp);
+		amss_sleep_time_ms_temp = time_updated_when_sleep_awake_s - amss_sleep_time_ms_temp / MSEC_PER_SEC;	//get modem awake time while APP sleep IN second
+		MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND|MSM_PM_DEBUG_POWER_COLLAPSE,
+		KERN_INFO, "%s(): APP keep: %10d.%03d s !!!!!!!!!!sleep!!!!!!!! modem awake %10d seconds %4d %%o\n", __func__,time_updated_when_sleep_awake_s,time_updated_when_sleep_awake_ms,(int)amss_sleep_time_ms_temp,(int)amss_sleep_time_ms_temp*1000/time_updated_when_sleep_awake_s);//modem keep awake normally about 2% while app sleeps
+		time_updated_when_sleep_awake = ts; 
+	}
+
+}
+/*End LHX_PM_20110324_01 add code to record how long the APP sleeps or keeps awake*/
 /*
  * Power collapse the Apps processor.  This function executes the handshake
  * protocol with Modem.
@@ -1095,7 +1141,10 @@ static int msm_pm_power_collapse
 	MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND | MSM_PM_DEBUG_POWER_COLLAPSE,
 		KERN_INFO,
 		"%s(): msm_pm_collapse returned %d\n", __func__, collapsed);
-
+		if(collapsed == 1)
+		{
+			record_sleep_awake_time(true);//LHX_PM_20110324_01 add code to record how long the APP sleeps or keeps awake 
+		}
 	MSM_PM_DPRINTK(MSM_PM_DEBUG_CLOCK, KERN_INFO,
 		"%s(): restore clock rate to %lu\n", __func__,
 		saved_acpuclk_rate);
@@ -1581,6 +1630,7 @@ arch_idle_exit:
 	msm_pm_add_stat(exit_stat, t2 - t1);
 #endif /* CONFIG_MSM_IDLE_STATS */
 }
+extern void dump_clock_require_tcxo(void);//LHX_PM_20101111_01 add code to record which clock is not closed 
 
 /*
  * Suspend the Apps processor.
@@ -1613,7 +1663,10 @@ static int msm_pm_enter(suspend_state_t state)
 
 #ifdef CONFIG_CLOCK_BASED_SLEEP_LIMIT
 	if (ret)
-		sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
+		{
+			sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
+			dump_clock_require_tcxo();	//LHX_PM_20101111_01 add code to record which clock is not closed 
+		}
 #endif
 
 	MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND, KERN_INFO,
@@ -1660,8 +1713,6 @@ static int msm_pm_enter(suspend_state_t state)
 		enum msm_pm_time_stats_id id;
 		int64_t end_time;
 #endif
-
-		clock_debug_print_enabled();
 
 #ifdef CONFIG_MSM_SLEEP_TIME_OVERRIDE
 		if (msm_pm_sleep_time_override > 0) {
@@ -1740,53 +1791,9 @@ static struct platform_suspend_ops msm_pm_ops = {
 
 static uint32_t restart_reason = 0x776655AA;
 
-#ifdef CONFIG_MACH_LGE
-/* LGE_CHANGE
- * flush console before reboot
- * from google's mahimahi kernel
- * 2010-05-04, cleaneye.kim@lge.com
- */
-
-static bool console_flushed;
-
-void msm_pm_flush_console(void)
-{
-	if (console_flushed)
-		return;
-	console_flushed = true;
-
-	printk("\n");
-	printk(KERN_EMERG "Restarting %s\n", linux_banner);
-	if (!try_acquire_console_sem()) {
-		release_console_sem();
-		return;
-	}
-
-	mdelay(50);
-
-	local_irq_disable();
-	if (try_acquire_console_sem())
-		printk(KERN_EMERG "msm_restart: Console was locked! Busting\n");
-	else
-		printk(KERN_EMERG "msm_restart: Console was locked!\n");
-	release_console_sem();
-}
-#endif
-
 static void msm_pm_power_off(void)
 {
-
-#ifdef CONFIG_MACH_LGE
-	/* To prevent Phone freezing during power off
-	 * blue.park@lge.com 2010-04-14 <To prevent Phone freezing during power off>
-	 */
-	smsm_change_state_nonotify(SMSM_APPS_STATE,
-						  0, SMSM_SYSTEM_POWER_DOWN);
-#endif
-#if 0
 	msm_rpcrouter_close();
-#endif
-	printk(KERN_INFO"%s: \n",__func__);
 	msm_proc_comm(PCOM_POWER_DOWN, 0, 0);
 	for (;;)
 		;
@@ -1794,37 +1801,11 @@ static void msm_pm_power_off(void)
 
 static void msm_pm_restart(char str, const char *cmd)
 {
-#ifdef CONFIG_MACH_LGE
-	/* LGE_CHANGE
-	 * flush console before reboot
-	 * from google's mahimahi kernel
-	 * 2010-05-04, cleaneye.kim@lge.com
-	 */
-    unsigned long irqflags;
-	static DEFINE_SPINLOCK(state_lock);
-	msm_pm_flush_console();
-	if (restart_reason == 0x776655BB) {
-		void *copy_addr;
-		unsigned int *rc_buffer;
-
-		copy_addr = lge_get_fb_copy_virt_addr();
-		*((unsigned *)copy_addr) = restart_reason;
-
-		rc_buffer = (unsigned int *)get_ram_console_buffer();
-		*rc_buffer = 0x0;
-
-	    spin_lock_irqsave(&state_lock, irqflags);
-		smsm_reset_modem(SMSM_APPS_SHUTDOWN);
-		smsm_reset_modem(SMSM_SYSTEM_REBOOT);
-
-		while (1)
-			;
-	}
-#endif
-#if 0
 	msm_rpcrouter_close();
-#endif
+	//ruanmeisi factory data reset too slowly
+	//msm_proc_comm(PCOM_RESET_CHIP, &restart_reason, 0);
 	msm_proc_comm(PCOM_RESET_CHIP_IMM, &restart_reason, 0);
+
 	for (;;)
 		;
 }
@@ -1843,14 +1824,25 @@ static int msm_reboot_call
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned code = simple_strtoul(cmd + 4, 0, 16) & 0xff;
 			restart_reason = 0x6f656d00 | code;
-		} else if (!strncmp(cmd, "", 1)) {
-			restart_reason = 0x776655AA;
-		} else if (!strncmp(cmd, "charge_reset", 12)) {
-			restart_reason = 0x776655BB;
+		#ifdef CONFIG_ZTE_PLATFORM /* SDUPDATE_MXF_20110309 */
+		}else if(!strncmp(cmd, "sd_update", 9)){ 
+			smem_global *global;
+			global = ioremap(SMEM_LOG_GLOBAL_BASE, sizeof(smem_global));
+			if (!global) {
+				printk(KERN_ERR "ioremap failed with SCL_SMEM_LOG_RAM_BASE\n");
+			}else{
+				global->err_dload= 0x2E6F73C9;
+			}
+			iounmap(global);
+			restart_reason = 0x77665501;
+		#endif
 		} else {
 			restart_reason = 0x77665501;
 		}
 	}
+
+       printk(KERN_INFO "[PM] reboot reason = 0x%x\n",restart_reason);
+	
 	return NOTIFY_DONE;
 }
 
@@ -1858,15 +1850,78 @@ static struct notifier_block msm_reboot_notifier = {
 	.notifier_call = msm_reboot_call,
 };
 
-#if defined(CONFIG_MACH_LGE)
-void lge_set_reboot_reason(unsigned int reason)
+#ifdef CONFIG_MSM_GPIO_WAKE
+struct gpio_stat {
+	int gpio;
+	int status;
+};
+/*
+ * Write out the power management statistics.
+ */
+static int msm_gpiowake_read_proc
+	(char *page, char **start, off_t off, int count, int *eof, void *data)
 {
-	restart_reason = reason;
+	int len;
+	char *p = page;
+	
+	struct gpio_stat *gpiostat = (struct gpio_stat *) data;
+	printk("msm_gpiowake_read_proc: get the gpio=%d\n",gpiostat->gpio);
+	
+	p += sprintf(p, "%d\n", gpiostat->status);
+	len = (p - page) - off;
+	*eof = (len <= count) ? 1 : 0;
+	*start = page + off;
+	
+	return len;	
+}
 
-	return;
+/*
+ * .
+ */
+static int msm_gpiowake_write_proc(struct file *file, const char __user *buffer,
+	unsigned long count, void *data)
+{
+	char *buf;
+	struct gpio_stat *gpiostat = (struct gpio_stat *) data;
+	
+	printk("msm_gpiowake_write_proc: get the gpio=%d\n",gpiostat->gpio);
+
+	if (count < 1)
+		return -EINVAL;
+
+	buf = kmalloc(count, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	if (copy_from_user(buf, buffer, count)) {
+		kfree(buf);
+		return -EFAULT;
+	}
+
+	if (buf[0] == '1') {
+		printk("[IRQWAKE] enable status=%d,gpio=%d\n",gpiostat->status,gpiostat->gpio);
+		if(gpiostat->status==0)
+		{
+			enable_irq_wake(MSM_GPIO_TO_INT(gpiostat->gpio));
+			gpiostat->status = 1;
+		}
+	} else if (buf[0] == '0') {
+		printk("[IRQWAKE] disable status=%d,gpio=%d\n",gpiostat->status,gpiostat->gpio);
+		if(gpiostat->status==1)
+		{
+			disable_irq_wake(MSM_GPIO_TO_INT(gpiostat->gpio));
+			gpiostat->status = 0;
+		}
+	} else {
+		kfree(buf);
+		return -EINVAL;
+	}
+
+	kfree(buf);
+	return count;
+	
 }
 #endif
-
 /******************************************************************************
  *
  *****************************************************************************/
@@ -1963,6 +2018,38 @@ static int __init msm_pm_init(void)
 		d_entry->data = NULL;
 	}
 #endif
+#ifdef CONFIG_MSM_GPIO_WAKE
+	{
+		struct gpio_stat *new_gpio_stat;
+		struct proc_dir_entry *entry;
+		/* Create the uid stat struct and append it to the list. */
+		if ((new_gpio_stat = kmalloc(sizeof(struct gpio_stat), GFP_KERNEL)) == NULL)
+			return -ENOMEM;
+		new_gpio_stat->gpio = 37;//gpio to wakeup for blade
+		new_gpio_stat->status = 0;//the gpio status
+	/*
+		gpiowake_dir = proc_mkdir("gpiowake", NULL);
+		if (gpiowake_dir == NULL) {
+			printk("Unable to create /proc/gpiowake directory");
+			return -ENOMEM;
+		}
+		// write 1 to enable
+		// write 0 to disable
+		// read to get the status
+		entry = create_proc_entry("BACK",
+			S_IRUGO | S_IWUGO, gpiowake_dir);
+	*/
+		entry = create_proc_entry("gpiowake",
+			S_IRUGO | S_IWUGO, NULL);
+		if (entry) {
+			entry->read_proc = msm_gpiowake_read_proc;
+			entry->write_proc = msm_gpiowake_write_proc;
+			entry->data = (void *)new_gpio_stat;
+		}
+		
+	}
+#endif
+
 	return 0;
 }
 
