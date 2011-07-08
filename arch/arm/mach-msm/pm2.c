@@ -46,6 +46,14 @@
 #include <asm/vfp.h>
 #endif
 
+#ifdef CONFIG_MACH_LGE
+#include <mach/board_lge.h>
+#endif
+
+#ifdef CONFIG_MSM_MEMORY_LOW_POWER_MODE_SUSPEND_DEEP_POWER_DOWN
+#include <mach/msm_migrate_pages.h>
+#endif
+
 #include "smd_private.h"
 #include "smd_rpcrouter.h"
 #include "acpuclock.h"
@@ -117,6 +125,7 @@ module_param_named(
 				msm_pm_smem_data->pending_irqs); \
 	} while (0)
 
+#define MAX_NR_CLKS 33
 
 /******************************************************************************
  * Sleep Modes and Parameters
@@ -946,7 +955,7 @@ static atomic_t msm_pm_init_done = ATOMIC_INIT(0);
 struct msm_pm_smem_t * get_msm_pm_smem_data(void)
 {
 	return msm_pm_smem_data;
-}
+	}
 
 #endif
 
@@ -995,7 +1004,7 @@ void record_sleep_awake_time(bool record_sleep_awake)
 		MSM_PM_DPRINTK(MSM_PM_DEBUG_SUSPEND|MSM_PM_DEBUG_POWER_COLLAPSE,
 		KERN_INFO, "%s(): APP keep: %10d.%03d s !!!!!!!!!!sleep!!!!!!!! modem awake %10d seconds %4d %%o\n", __func__,time_updated_when_sleep_awake_s,time_updated_when_sleep_awake_ms,(int)amss_sleep_time_ms_temp,(int)amss_sleep_time_ms_temp*1000/time_updated_when_sleep_awake_s);//modem keep awake normally about 2% while app sleeps
 		time_updated_when_sleep_awake = ts; 
-	}
+}
 
 }
 /*End LHX_PM_20110324_01 add code to record how long the APP sleeps or keeps awake*/
@@ -1664,7 +1673,7 @@ static int msm_pm_enter(suspend_state_t state)
 #ifdef CONFIG_CLOCK_BASED_SLEEP_LIMIT
 	if (ret)
 		{
-			sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
+		sleep_limit = SLEEP_LIMIT_NO_TCXO_SHUTDOWN;
 			dump_clock_require_tcxo();	//LHX_PM_20101111_01 add code to record which clock is not closed 
 		}
 #endif
@@ -1863,7 +1872,7 @@ static int msm_gpiowake_read_proc
 {
 	int len;
 	char *p = page;
-	
+
 	struct gpio_stat *gpiostat = (struct gpio_stat *) data;
 	printk("msm_gpiowake_read_proc: get the gpio=%d\n",gpiostat->gpio);
 	
