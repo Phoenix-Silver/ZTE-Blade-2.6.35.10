@@ -23,8 +23,6 @@
 #include <linux/proc_fs.h>
 #endif
 #include "power.h"
-//20100519 ZTE_WAKELOCK_LYJ_001 
-#include <linux/moduleparam.h>
 
 enum {
 	DEBUG_EXIT_SUSPEND = 1U << 0,
@@ -52,156 +50,6 @@ struct wake_lock main_wake_lock;
 suspend_state_t requested_suspend_state = PM_SUSPEND_MEM;
 static struct wake_lock unknown_wakeup;
 
-//ruanmeisi move do_sync from earlysuspend to thread
-struct suspend_sync_work
-{
-	struct workqueue_struct *workqueue;
-	struct wake_lock sync_wake_lock;
-	struct work_struct sync_work;
-	wait_queue_head_t wait_wq;
-	int enable;
-	int inprocess;//debug flag
-};
-
-static struct suspend_sync_work sync_in_suspend;
-
-
-#include <linux/delay.h>
-
-
-void enqueue_sync_work(signed long timeout)
-{
-	
-	long ret = 0;
-	DEFINE_WAIT(__wait);
-
-	if (NULL == sync_in_suspend.workqueue ||
-	    !sync_in_suspend.enable) {
-		sys_sync();
-		ret = 0;
-		return ;
-	}
-	prepare_to_wait(&sync_in_suspend.wait_wq, &__wait, TASK_UNINTERRUPTIBLE);
-	if(queue_work(sync_in_suspend.workqueue, &sync_in_suspend.sync_work)) {
-		ret = schedule_timeout(timeout);
-		if (ret == 0) {
-			printk(KERN_ERR"rms: %s %d: wait sync timeout\n",
-			       __FUNCTION__, __LINE__);
-		}
-	} else {
-		printk(KERN_ERR"rms:%s %d: suspend_sync already in queue\n",
-		       __FUNCTION__, __LINE__);
-	}
-	finish_wait(&sync_in_suspend.wait_wq, &__wait);
-	return ;
-}
-void abort_sync_wait(void)
-{
-	if (NULL == sync_in_suspend.workqueue) {
-		return ;
-	}
-	if (sync_in_suspend.inprocess) {
-		printk(KERN_ERR"rms:%s %d:sync in processing", __FUNCTION__, __LINE__);
-	}
-	wake_up_all(&sync_in_suspend.wait_wq);
-	return ;
-}
-int resume_work_pending(void);
-static void do_sync_work(struct work_struct *work)
-{
-	struct suspend_sync_work *p =
-		container_of(work, struct suspend_sync_work, sync_work);
-	
-	p->inprocess = 1;
-	wake_lock(&p->sync_wake_lock);
-	if (resume_work_pending()) {
-		//wake up earlysuspend when last_resume_work has queued
-		printk(KERN_ERR"rms:wake up earlysuspnd %s %d\n",
-		       __FUNCTION__, __LINE__);
-		wake_up_all(&p->wait_wq);
-	}
-	sys_sync();
-	wake_unlock(&p->sync_wake_lock);
-	wake_up_all(&p->wait_wq);
-	p->inprocess = 0;
-	
-}
-static void create_suspend_sync_work(void)
-{
-	sync_in_suspend.workqueue = create_singlethread_workqueue("suspend_sync");
-	INIT_WORK(&(sync_in_suspend.sync_work), do_sync_work);
-	wake_lock_init(&(sync_in_suspend.sync_wake_lock),
-		       WAKE_LOCK_SUSPEND, "suspend_sync");
-	init_waitqueue_head(&sync_in_suspend.wait_wq);
-	sync_in_suspend.enable = 1;
-	sync_in_suspend.inprocess = 0;
-	if (sync_in_suspend.enable) {
-		printk(KERN_ERR"pm: %s %d: sync in workqueue enable\n",
-		       __FUNCTION__, __LINE__);
-	}
-}
-void destroy_suspend_sync_work(void)
-{
-	if (sync_in_suspend.workqueue) {
-		destroy_workqueue(sync_in_suspend.workqueue);
-		sync_in_suspend.workqueue = NULL;
-	}
-	wake_lock_destroy(&sync_in_suspend.sync_wake_lock);
-	wake_up_all(&sync_in_suspend.wait_wq);
-	sync_in_suspend.enable = 0;
-	return ;
-}
-
-
-static ssize_t suspend_sync_show(struct device *devp, struct device_attribute *attr, char *buf)
-{
-        int i = 0;
-        i = scnprintf(buf, PAGE_SIZE, "%s\n", sync_in_suspend.enable? "enable":"disable");
-
-        return i;
-}
-static ssize_t suspend_sync_store(struct device *dev,
-                                   struct device_attribute *attr,
-                                   const char *buf, size_t size)
-{
-        int value;
-        sscanf(buf, "%d", &value);
-	sync_in_suspend.enable = !!value;
-        return size;
-}
-
-static DEVICE_ATTR(suspend_sync, S_IRUGO, suspend_sync_show, suspend_sync_store);
-
-
-#ifdef CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR
-
-#define WAKE_LOCK_RECORD_NR (10)
-
-#define RECORD_SIZE 400 
-char active_wake_lock_buf[WAKE_LOCK_RECORD_NR][RECORD_SIZE];
-
-static ssize_t active_wake_lock_show(struct device *devp, struct device_attribute *attr, char *buf)
-{
-	char * echo = buf;
-	int used_size = 0;
-	int ret =-1;
-	int i ;
-
-	for (i = 0; i < WAKE_LOCK_RECORD_NR; i++) {
-		ret = snprintf(echo + used_size, PAGE_SIZE - used_size, "%s\n",active_wake_lock_buf[i]);
-		if( ret < 0 ){
-			echo[used_size] = '\0';
-			return ret;
-		}
-		used_size += ret;
-	}
-	
-	return used_size;
-}
-
-static DEVICE_ATTR(active_wakelock, S_IRUGO, active_wake_lock_show, NULL);
-
-#endif
 #ifdef CONFIG_WAKELOCK_STAT
 static struct wake_lock deleted_wake_locks;
 static ktime_t last_sleep_time_update;
@@ -412,93 +260,19 @@ long has_wake_lock(int type)
 	return ret;
 }
 
-#ifdef CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR
-
-static void suspend_exception_handle(unsigned long data);
-static DEFINE_TIMER(suspend_exception_timer, suspend_exception_handle, 0, 0);
-static void dump_wake_locks(void);
-
-static void suspend_exception_handle(unsigned long data)
-{
-	unsigned long irqflags;
-	struct wake_lock *lock;
-	static int record_index = 0;
-	char *p_buf = active_wake_lock_buf[record_index];
-	int used_size = 0;
-	int ret =-1;
-	int record_max_size = RECORD_SIZE -1;//the last char is '\0'
-	struct timespec ts;
-	struct rtc_time tm;
-
-	dump_wake_locks();
-	getnstimeofday(&ts);
-	rtc_time_to_tm(ts.tv_sec, &tm);
-	
-	spin_lock_irqsave(&list_lock, irqflags);
-	
-	used_size = snprintf(p_buf, record_max_size, "(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n", 
-		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);	
-	if ( used_size <= 0 ){
-		p_buf[0] = '\0';
-		goto handle_out;
-	}
-		
-	list_for_each_entry(lock, &active_wake_locks[WAKE_LOCK_SUSPEND], link) {
-		if (lock->flags & WAKE_LOCK_AUTO_EXPIRE) {
-			long timeout = lock->expires - jiffies;
-			if (timeout <= 0)
-				ret = snprintf(p_buf + used_size , record_max_size  - used_size, "wake lock %s, expired\n", lock->name);
-			else
-				ret  = snprintf(p_buf +  used_size, record_max_size  - used_size, "active wake lock %s, time left %ld\n",
-					lock->name, timeout);
-		} else
-			ret = snprintf(p_buf + used_size, record_max_size  - used_size, "active wake lock %s\n", lock->name);
-
-		if ( ret <= 0 ){
-			p_buf[used_size] = '\0';
-			goto handle_out;
-		}
-		used_size += ret;
-	}
-	
-handle_out:	
-	record_index = (record_index + 1) % WAKE_LOCK_RECORD_NR;
-	
-	mod_timer(&suspend_exception_timer, jiffies + 5*60*HZ);
-	
-	spin_unlock_irqrestore(&list_lock, irqflags);
-}
-
-
-#endif
-//20100519 ZTE_WAKELOCK_LYJ_001 
-static int unknown_wakeup_timeout = 500;
-module_param_named(unknown_wakeup_timeout, unknown_wakeup_timeout, int, S_IRUGO | S_IWUSR | S_IWGRP)
 static void suspend(struct work_struct *work)
 {
 	int ret;
 	int entry_event_num;
 
-     //ruanmeisi
-	//	sys_sync();
-	enqueue_sync_work(2 * HZ);
-	//end
-	
 	if (has_wake_lock(WAKE_LOCK_SUSPEND)) {
 		if (debug_mask & DEBUG_SUSPEND)
 			pr_info("suspend: abort suspend\n");
 		return;
 	}
-#ifdef	CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR
-	
-	if(timer_pending(&suspend_exception_timer))
-		del_timer(&suspend_exception_timer);
-	
-#endif
+
 	entry_event_num = current_event_num;
-    //	sys_sync();
-	
+	sys_sync();
 	if (debug_mask & DEBUG_SUSPEND)
 		pr_info("suspend: enter suspend\n");
 	ret = pm_suspend(requested_suspend_state);
@@ -515,12 +289,7 @@ static void suspend(struct work_struct *work)
 	if (current_event_num == entry_event_num) {
 		if (debug_mask & DEBUG_SUSPEND)
 			pr_info("suspend: pm_suspend returned with no event\n");
-//20100519 ZTE_WAKELOCK_LYJ_001 
-#if 0
-        wake_lock_timeout(&unknown_wakeup, HZ / 2);
-#else
-        wake_lock_timeout(&unknown_wakeup, msecs_to_jiffies(unknown_wakeup_timeout));
-#endif
+		wake_lock_timeout(&unknown_wakeup, HZ / 2);
 	}
 }
 static DECLARE_WORK(suspend_work, suspend);
@@ -543,16 +312,6 @@ static void expire_wake_locks(unsigned long data)
 }
 static DEFINE_TIMER(expire_timer, expire_wake_locks, 0, 0);
 
-static void dump_wake_locks(void)
-{
-	unsigned long irqflags;
-	
-	pr_info("[POWER]******expire_wake_locks: start********\n");
-	spin_lock_irqsave(&list_lock, irqflags);	
-	print_active_locks(WAKE_LOCK_SUSPEND);	
-	spin_unlock_irqrestore(&list_lock, irqflags);
-	pr_info("[POWER]********************\n");
-}
 static int power_suspend_late(struct device *dev)
 {
 	int ret = has_wake_lock(WAKE_LOCK_SUSPEND) ? -EAGAIN : 0;
@@ -560,11 +319,7 @@ static int power_suspend_late(struct device *dev)
 	wait_for_wakeup = 1;
 #endif
 	if (debug_mask & DEBUG_SUSPEND)
-	{		
 		pr_info("power_suspend_late return %d\n", ret);
-		if (ret!=0)
-			dump_wake_locks();
-	}
 	return ret;
 }
 
@@ -682,15 +437,7 @@ static void wake_lock_internal(
 		list_add(&lock->link, &active_wake_locks[type]);
 	}
 	if (type == WAKE_LOCK_SUSPEND) {
-#ifdef	CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR			
-		
-		if (lock == &main_wake_lock) {
-			current_event_num++;
-			if(timer_pending(&suspend_exception_timer))
-				del_timer(&suspend_exception_timer);
-		}
-			
-#endif		
+		current_event_num++;
 #ifdef CONFIG_WAKELOCK_STAT
 		if (lock == &main_wake_lock)
 			update_sleep_wait_stats_locked(1);
@@ -744,12 +491,6 @@ void wake_unlock(struct wake_lock *lock)
 	lock->flags &= ~(WAKE_LOCK_ACTIVE | WAKE_LOCK_AUTO_EXPIRE);
 	list_del(&lock->link);
 	list_add(&lock->link, &inactive_locks);
-#ifdef	CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR	
-
-	if (lock == &main_wake_lock) 
-		mod_timer(&suspend_exception_timer,jiffies + 5*60*HZ); 
-	
-#endif
 	if (type == WAKE_LOCK_SUSPEND) {
 		long has_lock = has_wake_lock_locked(type);
 		if (has_lock > 0) {
@@ -824,29 +565,10 @@ static int __init wakelocks_init(void)
 	}
 
 	suspend_work_queue = create_singlethread_workqueue("suspend");
-
-	//ruanmeisi
-	create_suspend_sync_work();
-	ret = device_create_file(&power_device.dev, &dev_attr_suspend_sync);
-	if (ret) {
-		pr_err("wakelocks_init: suspend_sync device_create_file failed\n");
-	}
-
-	//end
-
 	if (suspend_work_queue == NULL) {
 		ret = -ENOMEM;
 		goto err_suspend_work_queue;
 	}
-#ifdef CONFIG_ZTE_SUSPEND_WAKEUP_MONITOR
-	
-	ret = device_create_file(&power_device.dev,&dev_attr_active_wakelock);
-	if (ret) {
-		pr_err("wakelocks_init: device_create_file failed\n");
-		goto err_suspend_work_queue;
-	}
-	
-#endif	
 
 #ifdef CONFIG_WAKELOCK_STAT
 	proc_create("wakelocks", S_IRUGO, NULL, &wakelock_stats_fops);
@@ -869,11 +591,6 @@ err_platform_device_register:
 
 static void  __exit wakelocks_exit(void)
 {
-	//ruanmeisi
-	device_remove_file(&power_device.dev, &dev_attr_suspend_sync);
-	destroy_suspend_sync_work();
-	//end
-	 
 #ifdef CONFIG_WAKELOCK_STAT
 	remove_proc_entry("wakelocks", NULL);
 #endif

@@ -20,7 +20,9 @@
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
+#ifndef CONFIG_LGE_HEADSET
 #include <linux/switch.h>
+#endif
 
 #include <asm/mach-types.h>
 
@@ -30,20 +32,8 @@
 
 #ifndef CONFIG_MACH_MSM7X27_ALOHAV
 #include <mach/gpio.h>
-#endif 
-
-
-#if defined(CONFIG_ZTE_PLATFORM)
-#include <linux/wakelock.h>
-static struct wake_lock hs_wake_lock;
-#define HS_WAKELOCK_TIME (HZ * 10)
-bool fm_is_on(void); /* @fm_si4708.c */
 #endif
 
-
-#ifdef CONFIG_SCREEN_ON_WITHOUT_KEYOCDE
-extern void msm_batt_force_update(void);
-#endif
 #define DRIVER_NAME	"msm-handset"
 
 #define HS_SERVER_PROG 0x30000062
@@ -72,11 +62,20 @@ extern void msm_batt_force_update(void);
 #define HS_HEADSET_MICROPHONE_K 0xF7
 #endif
 #define HS_REL_K		0xFF	/* key release */
-//cxh merge from 4735
-//zhengchao add ZTE_HS_ZHENGCHAO_01
-#define HS_EXT_PWR_ON_K         0x78    /* External power was turned on        0x78    */
-#define HS_EXT_PWR_OFF_K        0x79    /* External power was turned off       0x79    */
-//zhengchao add end
+
+#ifndef CONFIG_MACH_MSM7X27_ALOHAV
+/* LGE_CHANGE
+ * for hook key
+ * 2010-03-03, junyeob.an
+ * for deskdock detect from muic
+ * 2010-04-19
+ */
+#define HS_ON_HOOK_K		0x01	/* headphone hook key */
+#define GPIO_EAR_SENSE_BIAS		0x1D
+#define HS_DESKDOCK_DETECT	0x02	/* deskdock detect */
+#else
+#define SW_HEADPHONE_INSERT_W_MIC 1 /* HS with mic */
+#endif
 
 #define KEY(hs_key, input_key) ((hs_key << 24) | input_key)
 
@@ -206,13 +205,19 @@ struct hs_cmd_data_type {
 
 static const uint32_t hs_key_map[] = {
 	KEY(HS_PWR_K, KEY_POWER),
-	KEY(HS_END_K, KEY_SLEEP),
+	KEY(HS_END_K, KEY_END),
+#ifndef CONFIG_MACH_MSM7X27_ALOHAV
 	KEY(HS_STEREO_HEADSET_K, SW_HEADPHONE_INSERT),
+	KEY(HS_ON_HOOK_K, KEY_MEDIA),
+	KEY(HS_DESKDOCK_DETECT, KEY_CONNECT),
+#else
+	KEY(HS_STEREO_HEADSET_K, SW_HEADPHONE_INSERT_W_MIC),
+	KEY(HS_HEADSET_HEADPHONE_K, SW_HEADPHONE_INSERT),
+	KEY(HS_HEADSET_MICROPHONE_K, SW_MICROPHONE_INSERT),
 	KEY(HS_HEADSET_SWITCH_K, KEY_MEDIA),
 	KEY(HS_HEADSET_SWITCH_2_K, KEY_VOLUMEUP),
 	KEY(HS_HEADSET_SWITCH_3_K, KEY_VOLUMEDOWN),
-	KEY(HS_EXT_PWR_ON_K,KEY_WAKEUP),
-    KEY(HS_EXT_PWR_OFF_K,KEY_WAKEUP),
+#endif
 	0
 };
 
@@ -239,68 +244,24 @@ static struct hs_subs_rpc_req *hs_subs_req;
 
 struct msm_handset {
 	struct input_dev *ipdev;
+#ifndef CONFIG_LGE_HEADSET
 	struct switch_dev sdev;
+#endif
 	struct msm_handset_platform_data *hs_pdata;
+#ifdef CONFIG_MACH_MSM7X27_ALOHAV
+	bool mic_on, hs_on;
+#endif
 };
 
 static struct msm_rpc_client *rpc_client;
 static struct msm_handset *hs;
-#if defined(CONFIG_MACH_R750) 
-#define MSM_GPIO_GSM_EARPHONE_DETECT	    78
-typedef enum
-{
-  GPIO_LOW_LEVEL  = 0,
-  GPIO_HIGH_LEVEL = 1
-} GPIO_ValueType;
-static unsigned modemctl_config_earphonedetect = GPIO_CFG(
-MSM_GPIO_GSM_EARPHONE_DETECT, 0, GPIO_OUTPUT, GPIO_PULL_UP, GPIO_2MA);
+static void (*deskdock_detect_callback)(int);
 
-static int earphone_gpio_init(void)
-{
-    int rc = 0;
-
-    /* GSM AT_SW pin */
-    rc = gpio_tlmm_config(modemctl_config_earphonedetect ,GPIO_ENABLE);
-	if (rc) 
-	{
-		printk(KERN_ERR "%s: gpio_tlmm_config(%#x)=%d\n",__func__, 
-			MSM_GPIO_GSM_EARPHONE_DETECT, rc);
-		return -EIO;
-	}
-	rc = gpio_request(MSM_GPIO_GSM_EARPHONE_DETECT, "modemctl");
-	if(rc)
-	{
-		printk(KERN_ERR "gpio_request: %d failed!\n", MSM_GPIO_GSM_EARPHONE_DETECT);
-        return rc;
-	}
-    return rc;
-}
-
-static int earphone_detect_insert(void)
-{
-    gpio_set_value(MSM_GPIO_GSM_EARPHONE_DETECT, GPIO_LOW_LEVEL);
-    return (gpio_get_value(MSM_GPIO_GSM_EARPHONE_DETECT));
-}
-
-static int earphone_detect_remove(void)
-{
-	gpio_set_value(MSM_GPIO_GSM_EARPHONE_DETECT, GPIO_HIGH_LEVEL);
-    return (gpio_get_value(MSM_GPIO_GSM_EARPHONE_DETECT));
-}
-
-//don't forward headset state when GSM Modem is unworking, start ZTE_HS_YXS_20100811
-#define MSM_GPIO_GSM_WORKING 16
-#define MODEM_STATE_WORKING 1
-static int ifxgsm_get_gpio_status(unsigned int gpio_id)
-{
-	return (gpio_get_value(gpio_id));
-}
-static int ifxgsm_get_workingstate(void)
-{
-    return ifxgsm_get_gpio_status(MSM_GPIO_GSM_WORKING);
-}
-//don't forward headset state when GSM Modem is unworking, end ZTE_HS_YXS_20100811
-#endif 
+#if defined(CONFIG_LGE_DIAGTEST)
+/* LGE_CHANGES_S [woonghee@lge.com] 2010-01-23, [VS740] for key test */
+extern uint8_t if_condition_is_on_key_buffering;
+extern uint8_t lgf_factor_key_test_rsp(char);
+#endif
 
 static int hs_find_key(uint32_t hscode)
 {
@@ -315,60 +276,34 @@ static int hs_find_key(uint32_t hscode)
 	return -1;
 }
 
+#ifndef CONFIG_MACH_MSM7X27_ALOHAV
+#ifndef CONFIG_LGE_HEADSET
 static void
 report_headset_switch(struct input_dev *dev, int key, int value)
 {
 	struct msm_handset *hs = input_get_drvdata(dev);
 
-	#if defined(CONFIG_MACH_R750) 
-	printk("CHYL:report_headset_switch key=%d,value=%d\n",key,value);
-    
-    //don't forward headset state when GSM Modem is unworking, begin ZTE_HS_YXS_20100811
-    #if 0
-    if(value)
-	   	earphone_detect_insert();
-	else
-		earphone_detect_remove();	
-    #else
-    if (MODEM_STATE_WORKING == ifxgsm_get_workingstate())
-    {
-	if(value)
-		earphone_detect_insert();
-	else
-		    earphone_detect_remove();	
-    }
-    #endif
-    //don't forward headset state when GSM Modem is unworking, end ZTE_HS_YXS_20100811
-	#endif 
-	
 	input_report_switch(dev, key, value);
 	switch_set_state(&hs->sdev, value);
-
-   
-   #if defined(CONFIG_ZTE_PLATFORM)
-	/* set wakelock when removing headset & fm is on */
-	if (!value && fm_is_on())
-	{
-		pr_err("[YXS]set hs_wake_lock, %d timeout\n", HS_WAKELOCK_TIME);
-		wake_lock_timeout(&hs_wake_lock, HS_WAKELOCK_TIME);
-	}
-   #endif
-   
 }
-
-
-#if defined(CONFIG_ZTE_PLATFORM)
-void report_fm_closed(void)
+#endif
+#else
+static void update_state(void)
 {
-	if (wake_lock_active(&hs_wake_lock))
-	{
-		pr_err("[YXS]unlock hs_wake_lock\n");
-		wake_unlock(&hs_wake_lock);
-	}
-}
-EXPORT_SYMBOL(report_fm_closed);
-#endif /* CONFIG_ZTE_PLATFORM */
+	int state;
 
+	if (hs->mic_on && hs->hs_on)
+		state = 1 << 0;
+	else if (hs->hs_on)
+		state = 1 << 1;
+	else if (hs->mic_on)
+		state = 1 << 2;
+	else
+		state = 0;
+
+	switch_set_state(&hs->sdev, state);
+}
+#endif
 
 /*
  * tuple format: (key_code, key_param)
@@ -396,26 +331,71 @@ static void report_hs_key(uint32_t key_code, uint32_t key_parm)
 		key_code = key_parm;
 
 	switch (key) {
+#ifndef CONFIG_MACH_MSM7X27_ALOHAV
 	case KEY_POWER:
-	case KEY_SLEEP:
-	case KEY_MEDIA:
-    case KEY_VOLUMEUP:
-	case KEY_VOLUMEDOWN:
-	    printk(KERN_ERR "--keycode from A9\n \tkey:%d keycode:%d\n",key,key_code);
+	case KEY_END:
 		input_report_key(hs->ipdev, key, (key_code != HS_REL_K));
 		break;
-		
-case KEY_WAKEUP:
-		printk(KERN_ERR "--keycode from A9(charger)\n \tkey:%d keycode:%d\n",key,key_code);
-#ifdef CONFIG_SCREEN_ON_WITHOUT_KEYOCDE
-    		msm_batt_force_update();
-#else
-		input_report_key(hs->ipdev, key, (key_code != HS_REL_K));
-#endif
+	case KEY_MEDIA:
+		if (gpio_get_value(GPIO_EAR_SENSE_BIAS) == 1) {
+			/* LGE_CHANGE
+			 * 2010-03-09, junyoub.an@lge.com To protect from wrong hook key operation
+			 */ 
+			input_report_key(hs->ipdev, key, (key_code != HS_REL_K));
+		}
+		break;
+	case KEY_CONNECT:
+		if (deskdock_detect_callback)
+			deskdock_detect_callback((key_code != HS_REL_K));
 		break;
 	case SW_HEADPHONE_INSERT:
+#ifndef CONFIG_LGE_HEADSET
 		report_headset_switch(hs->ipdev, key, (key_code != HS_REL_K));
+#endif
+#if defined(CONFIG_LGE_DIAGTEST)
+		/* LGE_CHANGES
+		 * [woonghee@lge.com] 2010-01-23
+		 * [VS740] for key test */
+		if(if_condition_is_on_key_buffering == HS_TRUE && key_code == 0/*press*/)
+			lgf_factor_key_test_rsp((uint8_t)key);
+#endif
 		break;
+#else /*CONFIG_MACH_MSM7X27_ALOHAG*/
+	case KEY_POWER:
+	case KEY_END:
+	case KEY_MEDIA:
+	case KEY_VOLUMEUP:
+	case KEY_VOLUMEDOWN:
+		input_report_key(hs->ipdev, key, (key_code != HS_REL_K));
+#if defined(CONFIG_LGE_DIAGTEST)
+		/* LGE_CHANGES
+		 * [woonghee@lge.com] 2010-01-23, 
+		 * [VS740] for key test
+		 */
+		if(if_condition_is_on_key_buffering == HS_TRUE && key_code == 0/*press*/)
+			lgf_factor_key_test_rsp((uint8_t)key);
+#endif
+		break;
+	case SW_HEADPHONE_INSERT_W_MIC:
+		hs->mic_on = hs->hs_on = (key_code != HS_REL_K) ? 1 : 0;
+		input_report_switch(hs->ipdev, SW_HEADPHONE_INSERT,
+							hs->hs_on);
+		input_report_switch(hs->ipdev, SW_MICROPHONE_INSERT,
+							hs->mic_on);
+		update_state();
+		break;
+
+	case SW_HEADPHONE_INSERT:
+		hs->hs_on = (key_code != HS_REL_K) ? 1 : 0;
+		input_report_switch(hs->ipdev, key, hs->hs_on);
+		update_state();
+		break;
+	case SW_MICROPHONE_INSERT:
+		hs->mic_on = (key_code != HS_REL_K) ? 1 : 0;
+		input_report_switch(hs->ipdev, key, hs->mic_on);
+		update_state();
+		break;
+#endif /*CONFIG_MACH_MSM7X27_ALOHAG */
 	case -1:
 		printk(KERN_ERR "%s: No mapping for remote handset event %d\n",
 				 __func__, temp_key_code);
@@ -538,8 +518,18 @@ void report_headset_status(bool connected)
 }
 EXPORT_SYMBOL(report_headset_status);
 
+#ifdef CONFIG_MACH_LGE
+void rpc_server_hs_register_callback(void *callback_func)
+{
+	deskdock_detect_callback = (void (*)(int))callback_func;
+
+	return;
+}
+EXPORT_SYMBOL(rpc_server_hs_register_callback);
+#endif
+
 static int hs_rpc_pwr_cmd_arg(struct msm_rpc_client *client,
-				    void *buffer, void *data)
+                    void *buffer, void *data)
 {
 	struct hs_cmd_data_type *hs_pwr_cmd = buffer;
 
@@ -678,6 +668,18 @@ static int __devinit hs_rpc_init(void)
 	int rc;
 
 	rc = hs_rpc_cb_init();
+
+#ifdef CONFIG_MACH_LGE
+	/* FIXME: following code is from qualcomm's 2.6.32 kernel
+	 * in qualcomm's original code in 7020 version,
+	 * rpc server of handset can't be created in any case.
+	 * so, power key event is never passed from arm9.
+	 * this comes from fact that hs_rpc_cb_init() always returns '0'
+	 * and subsequently msm_rpc_create_server() is never called.
+	 * this is obvious qualcomm's bug.
+	 * I expect that qualcomm fix this bug later.
+	 * 2010-11-18, cleaneye.kim@lge.com
+	 */
 	if (rc) {
 		pr_err("%s: failed to initialize rpc client\n", __func__);
 		return rc;
@@ -686,6 +688,18 @@ static int __devinit hs_rpc_init(void)
 	rc = msm_rpc_create_server(&hs_rpc_server);
 	if (rc)
 		pr_err("%s: failed to create rpc server\n", __func__);
+#else
+	if (rc) {
+		pr_err("%s: failed to initialize rpc client, try server...\n",
+						__func__);
+
+		rc = msm_rpc_create_server(&hs_rpc_server);
+		if (rc) {
+			pr_err("%s: failed to create rpc server\n", __func__);
+			return rc;
+		}
+	}
+#endif
 
 	return rc;
 }
@@ -696,6 +710,7 @@ static void __devexit hs_rpc_deinit(void)
 		msm_rpc_unregister_client(rpc_client);
 }
 
+#ifndef CONFIG_LGE_HEADSET
 static ssize_t msm_headset_print_name(struct switch_dev *sdev, char *buf)
 {
 	switch (switch_get_state(&hs->sdev)) {
@@ -706,6 +721,7 @@ static ssize_t msm_headset_print_name(struct switch_dev *sdev, char *buf)
 	}
 	return -EINVAL;
 }
+#endif
 
 static int __devinit hs_probe(struct platform_device *pdev)
 {
@@ -716,12 +732,14 @@ static int __devinit hs_probe(struct platform_device *pdev)
 	if (!hs)
 		return -ENOMEM;
 
+#ifndef CONFIG_LGE_HEADSET
 	hs->sdev.name	= "h2w";
 	hs->sdev.print_name = msm_headset_print_name;
 
 	rc = switch_dev_register(&hs->sdev);
 	if (rc)
 		goto err_switch_dev_register;
+#endif
 
 	ipdev = input_allocate_device();
 	if (!ipdev) {
@@ -744,17 +762,16 @@ static int __devinit hs_probe(struct platform_device *pdev)
 	ipdev->id.product	= 1;
 	ipdev->id.version	= 1;
 
-	input_set_capability(ipdev, EV_KEY, KEY_WAKEUP);
 	input_set_capability(ipdev, EV_KEY, KEY_MEDIA);
 	input_set_capability(ipdev, EV_KEY, KEY_VOLUMEUP);
 	input_set_capability(ipdev, EV_KEY, KEY_VOLUMEDOWN);
 	input_set_capability(ipdev, EV_SW, SW_HEADPHONE_INSERT);
+#ifdef CONFIG_MACH_MSM7X27_ALOHAV
+	input_set_capability(ipdev, EV_SW, SW_MICROPHONE_INSERT);
+#endif
 	input_set_capability(ipdev, EV_KEY, KEY_POWER);
-	
-	 //disable KEY_END, enable KEY_SLEEP
-	//input_set_capability(ipdev, EV_KEY, KEY_END);
-	input_set_capability(ipdev, EV_KEY, KEY_SLEEP);
-	/*end, ZTE_HS_ZHUYF_002*/
+	input_set_capability(ipdev, EV_KEY, KEY_END);
+
 	rc = input_register_device(ipdev);
 	if (rc) {
 		dev_err(&ipdev->dev,
@@ -769,11 +786,6 @@ static int __devinit hs_probe(struct platform_device *pdev)
 		dev_err(&ipdev->dev, "rpc init failure\n");
 		goto err_hs_rpc_init;
 	}
-   
-   #if defined(CONFIG_ZTE_PLATFORM)
-	wake_lock_init(&hs_wake_lock, WAKE_LOCK_SUSPEND, "hs");
-   #endif
-   
 
 	return 0;
 
@@ -783,8 +795,10 @@ err_hs_rpc_init:
 err_reg_input_dev:
 	input_free_device(ipdev);
 err_alloc_input_dev:
+#ifndef CONFIG_LGE_HEADSET
 	switch_dev_unregister(&hs->sdev);
 err_switch_dev_register:
+#endif
 	kfree(hs);
 	return rc;
 }
@@ -794,7 +808,9 @@ static int __devexit hs_remove(struct platform_device *pdev)
 	struct msm_handset *hs = platform_get_drvdata(pdev);
 
 	input_unregister_device(hs->ipdev);
+#ifndef CONFIG_LGE_HEADSET
 	switch_dev_unregister(&hs->sdev);
+#endif
 	kfree(hs);
 	hs_rpc_deinit();
 	return 0;
@@ -811,21 +827,12 @@ static struct platform_driver hs_driver = {
 
 static int __init hs_init(void)
 {
-	#if defined(CONFIG_MACH_R750) 
-	earphone_gpio_init();
-	#endif 
 	return platform_driver_register(&hs_driver);
 }
 late_initcall(hs_init);
 
 static void __exit hs_exit(void)
 {
-   
-   #if defined(CONFIG_ZTE_PLATFORM)
-	wake_lock_destroy(&hs_wake_lock);
-   #endif
-   
-
 	platform_driver_unregister(&hs_driver);
 }
 module_exit(hs_exit);

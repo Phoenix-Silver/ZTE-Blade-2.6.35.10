@@ -39,6 +39,11 @@
 #include <linux/console.h>
 #include <linux/android_pmem.h>
 #include <linux/leds.h>
+#include <linux/pm_runtime.h>
+
+#ifdef CONFIG_LGE_HIDDEN_RESET_PATCH
+#include <mach/board_lge.h>
+#endif
 
 #define MSM_FB_C
 #include "msm_fb.h"
@@ -46,24 +51,6 @@
 #include "tvenc.h"
 #include "mdp.h"
 #include "mdp4.h"
-
-
-#include <linux/proc_fs.h>
-static struct proc_dir_entry * d_entry;
-static int lcd_debug;
-char  module_name[50]={"0"};
-void init_lcd_proc(void);
-void deinit_lcd_proc(void);
-static int msm_lcd_read_proc(char *page, char **start, off_t off, int count, int *eof, void *data);
-static int msm_lcd_write_proc(struct file *file, const char __user *buffer,unsigned long count, void *data);
-
-
-
-#ifdef CONFIG_ZTE_PLATFORM
-#ifdef CONFIG_ZTE_FTM_FLAG_SUPPORT
-extern int zte_get_ftm_flag(void);
-#endif
-#endif
 
 #ifdef CONFIG_FB_MSM_LOGO
 #define INIT_IMAGE_FILE "/initlogo.rle"
@@ -122,6 +109,35 @@ static int msm_fb_suspend_sub(struct msm_fb_data_type *mfd);
 static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			unsigned long arg);
 static int msm_fb_mmap(struct fb_info *info, struct vm_area_struct * vma);
+
+#if CONFIG_LGE_GRAM_REFRESH_PATCH
+static struct fb_var_screeninfo *last_var;
+static struct fb_info *last_info;
+static struct early_suspend additional_early_suspend;
+static void msmfb_early_suspend_early(struct early_suspend *h);
+static void msmfb_late_resume_late(struct early_suspend *h);
+#endif
+
+/* LGE_CHANGE_S
+ * Change codes to remove console cursor on booting screen. Refered to VS740
+ * 2010-07-31. minjong.gong@lge.com
+ */
+#ifdef CONFIG_LGE_FBCON_INACTIVE_CONSOLE
+static int is_console_inactive = 0;
+
+static void msm_fb_set_console_inactive(int inactive)
+{
+
+       is_console_inactive = inactive;
+}
+
+int msm_fb_get_console_inactive(void)
+{
+       return is_console_inactive;
+}
+EXPORT_SYMBOL(msm_fb_get_console_inactive);
+#endif
+/* LGE_CHANGE_E, 2010-07-31. minjong.gong@lge.com  */
 
 #ifdef MSM_FB_ENABLE_DBGFS
 
@@ -347,26 +363,11 @@ static int msm_fb_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mfd->panel_info.frame_count = 0;
-	
-	mfd->bl_level = mfd->panel_info.bl_max/6;
-	
-#ifdef CONFIG_ZTE_PLATFORM
-#ifdef CONFIG_ZTE_FTM_FLAG_SUPPORT
-    if(zte_get_ftm_flag())
-    {
-        mfd->bl_level = 3;
-    }
-#endif
-#endif
-	
+	mfd->bl_level = 0;
 #ifdef CONFIG_FB_MSM_OVERLAY
 	mfd->overlay_play_enable = 1;
 #endif
 
-       
-       init_lcd_proc();
-       
-       
 	rc = msm_fb_register(mfd);
 	if (rc)
 		return rc;
@@ -685,16 +686,8 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 
 	if ((pdata) && (pdata->set_backlight)) {
 		down(&mfd->sem);
-		if ((bkl_lvl != mfd->bl_level) || (!save)) {
-			u32 old_lvl;
-
-			old_lvl = mfd->bl_level;
-			mfd->bl_level = bkl_lvl;
-			pdata->set_backlight(mfd);
-
-			if (!save)
-				mfd->bl_level = old_lvl;
-		}
+		mfd->bl_level = bkl_lvl;
+		pdata->set_backlight(mfd);
 		up(&mfd->sem);
 	}
 }
@@ -721,11 +714,7 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			msleep(16);
 			ret = pdata->on(mfd->pdev);
 			if (ret == 0) {
-				msleep(30);				//
 				mfd->panel_power_on = TRUE;
-
-				msm_fb_set_backlight(mfd,
-						     mfd->bl_level, 0);
 
 /* ToDo: possible conflict with android which doesn't expect sw refresher */
 /*
@@ -751,16 +740,13 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 
 			mfd->op_enable = FALSE;
 			curr_pwr_state = mfd->panel_power_on;
-			msm_fb_set_backlight(mfd, 0, 0);		
 			mfd->panel_power_on = FALSE;
 
 			msleep(16);
 			ret = pdata->off(mfd->pdev);
 			if (ret)
 				mfd->panel_power_on = curr_pwr_state;
-            
-			/*msm_fb_set_backlight(mfd, 0, 0);*/
-			
+
 			mfd->op_enable = TRUE;
 		}
 		break;
@@ -1205,10 +1191,18 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if (mfd->panel_info.type != DTV_PANEL) {
-	mfd->early_suspend.suspend = msmfb_early_suspend;
-	mfd->early_suspend.resume = msmfb_early_resume;
-	mfd->early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 2;
-	register_early_suspend(&mfd->early_suspend);
+		mfd->early_suspend.suspend = msmfb_early_suspend;
+		mfd->early_suspend.resume = msmfb_early_resume;
+		mfd->early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 2;
+		register_early_suspend(&mfd->early_suspend);
+	}
+
+#if CONFIG_LGE_GRAM_REFRESH_PATCH
+	additional_early_suspend.suspend = msmfb_early_suspend_early;
+	additional_early_suspend.resume = msmfb_late_resume_late;
+	additional_early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 10;
+	register_early_suspend(&additional_early_suspend);
+#endif
 #endif
 
 #ifdef MSM_FB_ENABLE_DBGFS
@@ -1274,11 +1268,6 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 			msm_fb_debugfs_file_create(sub_dir, "frame_count",
 						   (u32 *) &mfd->panel_info.
 						   frame_count);
-			//add by zhanggc for test   ZTE_LCD_LHT_20100611_001
-		    printk("[ZGC]:LcdPanleID = %d\n",LcdPanleID);
-            msm_fb_debugfs_file_create(sub_dir, "lcd_type",
-						   (u32 *) &LcdPanleID);
-
 
 
 			switch (mfd->dest) {
@@ -1349,6 +1338,14 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 static int msm_fb_open(struct fb_info *info, int user)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	int result;
+
+	result = pm_runtime_get_sync(info->dev);
+
+	if (result < 0) {
+		printk(KERN_ERR "pm_runtime: fail to wake up\n");
+	}
+
 
 	if (!mfd->ref_cnt) {
 		mdp_set_dma_pan_info(info, NULL, TRUE);
@@ -1358,6 +1355,16 @@ static int msm_fb_open(struct fb_info *info, int user)
 			return -1;
 		}
 	}
+
+/* LGE_CHANGE_S
+ * Change codes to remove console cursor on booting screen. Refered to VS740
+ * 2010-07-31. minjong.gong@lge.com
+ */
+#ifdef CONFIG_LGE_FBCON_INACTIVE_CONSOLE
+		if(mfd->ref_cnt > 1 && msm_fb_get_console_inactive())
+				msm_fb_set_console_inactive(0);
+#endif
+/* LGE_CHANGE_E, 2010-07-31. minjong.gong@lge.com */
 
 	mfd->ref_cnt++;
 	return 0;
@@ -1397,6 +1404,10 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	struct mdp_dirty_region dirty;
 	struct mdp_dirty_region *dirtyPtr = NULL;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+#if 0
+	last_var = var;
+	last_info = info;
+#endif
 
 	if ((!mfd->op_enable) || (!mfd->panel_power_on))
 		return -EPERM;
@@ -2892,149 +2903,7 @@ static int msm_fb_register_driver(void)
 	return platform_driver_register(&msm_fb_driver);
 }
 
-
-
-static int msm_lcd_read_proc(
-        char *page, char **start, off_t off, int count, int *eof, void *data)
-{
-	int len = 0;
-    printk("[ZGC]:msm_lcd_read_proc\n");
-	switch(LcdPanleID)
-	{
-		case LCD_PANEL_P726_ILI9325C:
-			strcpy(module_name,"1");
-			//len = sprintf(page, "%s\n","1");
-			break;
-		case LCD_PANEL_P726_HX8347D:
-			strcpy(module_name,"2");
-			//len = sprintf(page, "%s\n","2");
-			break;
-		case LCD_PANEL_P726_S6D04M0X01:
-			strcpy(module_name,"3");
-			//len = sprintf(page, "%s\n","3");
-			break;
-		case LCD_PANEL_P722_HX8352A:
-			strcpy(module_name,"10");
-			//len = sprintf(page, "%s\n","10");
-			break;
-		case LCD_PANEL_P727_HX8352A:
-			strcpy(module_name,"20");
-			//len = sprintf(page, "%s\n","20");
-			break;
-		case LCD_PANEL_R750_ILI9481_1:
-			strcpy(module_name,"30");
-			//len = sprintf(page, "%s\n","30");
-			break;
-		case LCD_PANEL_R750_ILI9481_2:
-			strcpy(module_name,"31");
-			//len = sprintf(page, "%s\n","31");
-			break;
-		case LCD_PANEL_R750_ILI9481_3:
-			strcpy(module_name,"32");
-			//len = sprintf(page, "%s\n","32");
-			break;
-		case LCD_PANEL_P729_TL2796:
-			strcpy(module_name,"40");
-			//len = sprintf(page, "%s\n","40");
-			break;
-		case LCD_PANEL_P729_TFT_LEAD:
-			strcpy(module_name,"42");
-			//len = sprintf(page, "%s\n","40");
-			break;
-		case LCD_PANEL_P729_TFT_TRULY:
-			strcpy(module_name,"41");
-			//len = sprintf(page, "%s\n","40");
-			break;
-		case LCD_PANEL_V9_NT39416I:
-			strcpy(module_name,"50");
-			//len = sprintf(page, "%s\n","40");
-			break;	
-		case LCD_PANEL_4P3_NT35510:
-			strcpy(module_name,"60");
-			break;
-		case LCD_PANEL_4P3_HX8369A:
-			strcpy(module_name,"61");
-			break;
-		case LCD_PANEL_3P8_NT35510_1:
-			strcpy(module_name,"70");
-			break;
-		case LCD_PANEL_3P8_NT35510_2:
-			strcpy(module_name,"71");
-			break;
-		case LCD_PANEL_3P8_HX8363A:
-			strcpy(module_name,"72");
-			break;
-		case LCD_PANEL_3P5_ILI9481_1:
-			strcpy(module_name,"80");
-			break;
-		case LCD_PANEL_3P5_ILI9481_2:
-			strcpy(module_name,"81");
-			break;
-		case LCD_PANEL_3P5_R61581:
-			strcpy(module_name,"82");
-			break;
-		case LCD_PANEL_2P6_HX8368A_1:
-			strcpy(module_name,"90");
-			break;
-		case LCD_PANEL_2P6_HX8368A_2:
-			strcpy(module_name,"91");
-			break;
-		default:
-			strcpy(module_name,"0");
-			//len = sprintf(page, "%s\n","0");
-			break;
-	}
-	len = sprintf(page, "%s\n",module_name);
-	return len;
-
-}
-
-static int msm_lcd_write_proc(struct file *file, const char __user *buffer,
-			     unsigned long count, void *data)
-{
-	char tmp[16] = {0};
-	int len = 0;
-	len = count;
-	
-    
-	if (count > sizeof(tmp)) {
-		len = sizeof(tmp) - 1;
-	}
-	if(copy_from_user(tmp, buffer, len))
-                return -EFAULT;
-	if (strstr(tmp, "on")) {
-		lcd_debug = 1;
-	} else if (strstr(tmp, "off")) {
-		lcd_debug = 0;
-	}
-	return count;
-
-}
-
-void  init_lcd_proc(void)
-{
-       printk("[ZGC]:init_lcd_proc\n");
-	d_entry = create_proc_entry("msm_lcd",
-				    0, NULL);
-        if (d_entry) {
-                d_entry->read_proc = msm_lcd_read_proc;
-                d_entry->write_proc = msm_lcd_write_proc;
-                d_entry->data = NULL;
-        }
-
-}
-
-void deinit_lcd_proc(void)
-{
-        printk("[ZGC]:deinit_lcd_proc\n");
-	if (NULL != d_entry) {
-		remove_proc_entry("msm_lcd", NULL);
-		d_entry = NULL;
-	}
-}
-
-
-void msm_fb_add_device(struct platform_device *pdev)
+struct platform_device *msm_fb_add_device(struct platform_device *pdev)
 {
 	struct msm_fb_panel_data *pdata;
 	struct platform_device *this_dev = NULL;
